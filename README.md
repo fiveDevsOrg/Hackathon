@@ -4,6 +4,31 @@ Five developers. Five AI app MVPs. One scoreboard: **who can prove people will p
 
 A working demo is the floor. The winner is whoever gets closest to **real dollars.**
 
+## 🤖 Read first — for AI agents & humans
+
+**One repo, many branches. All work happens on a builder's branch — never on `main`.**
+
+1. Find your owner in the table and check out their branch: `git checkout <Owner>_Dev`
+2. Do **all** your work on that branch.
+3. Each app is its own folder inside the branch: `<Owner>_Dev/<project-name>/`
+4. Never commit to `main` or to another builder's branch.
+
+| Builder | Your branch (workstation) |
+|---------|---------------------------|
+| @yemi-bot | `Yemi_Dev` |
+| @PoloXBT | `Polo_Dev` |
+| @cryptocvs29-ai | `CvsTony_Dev` |
+
+```text
+Yemi_Dev/            <- your branch
+├── project-a/       <- its own app + its own deploy (Vercel Root Directory = this folder)
+├── project-b/
+└── ...
+```
+
+Shared rules live here on `main`: [`MONEY-VALIDATION.md`](./MONEY-VALIDATION.md) ·
+[`IDEAS.md`](./IDEAS.md) · [`RULES.md`](./RULES.md).
+
 ## Start here
 
 1. **Read [`MONEY-VALIDATION.md`](./MONEY-VALIDATION.md)** — the checklist every MVP must
@@ -11,8 +36,8 @@ A working demo is the floor. The winner is whoever gets closest to **real dollar
 2. **Pick an idea from [`IDEAS.md`](./IDEAS.md)** — vetted for fastest path to first paying
    customer — or bring your own. Claim it via an issue: `CLAIM: <idea> — <handle>`.
 3. **Read [`RULES.md`](./RULES.md)** — timeline, daily standups, demo-day format, judging.
-4. **Copy [`PROJECT-TEMPLATE.md`](./PROJECT-TEMPLATE.md)** into your own repo's `README.md`
-   and fill it in.
+4. **Copy [`PROJECT-TEMPLATE.md`](./PROJECT-TEMPLATE.md)** into each project folder's
+   `README.md` and fill it in.
 
 ## How we work
 
@@ -39,9 +64,10 @@ Everything lives under one banner — this **Hackathon** repo.
 | Branch | Builder |
 |--------|---------|
 | `main` | shared banner |
-| `Polo_Dev` | @PoloXBT |
 | `Yemi_Dev` | @yemi-bot |
-| _one per builder_ | … |
+| `Polo_Dev` | @PoloXBT |
+| `CvsTony_Dev` | @cryptocvs29-ai |
+| _branch tbd_ | 5th builder |
 
 Each builder deploys their own branch from their own account.
 
