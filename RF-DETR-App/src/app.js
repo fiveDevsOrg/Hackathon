@@ -1,4 +1,4 @@
-import { createDetector } from "./detector.js";
+import { createDetector } from "./detector.js?v=6c146a3";
 
 const video = document.querySelector("#camera");
 const canvas = document.querySelector("#overlay");
