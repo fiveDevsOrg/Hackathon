@@ -19,6 +19,10 @@ button {
   font: inherit;
 }
 
+.hidden {
+  display: none !important;
+}
+
 .app-shell {
   min-height: 100vh;
   display: grid;
@@ -169,7 +173,7 @@ p {
   font-size: 14px;
   line-height: 1.45;
   text-align: right;
-  content: "Capture gestures, store samples locally, then test pinch, zoom, and swipe behavior in the sandbox.";
+  content: "Pinch and hold on the selected item to drag it. Use two open hands to zoom. Swipe an open hand left or right to switch items.";
   pointer-events: none;
 }
 

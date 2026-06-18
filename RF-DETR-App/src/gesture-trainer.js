@@ -1,5 +1,9 @@
 const STORAGE_KEY = "gesture-lab-samples-v1";
 const TRAIL_LIMIT = 18;
+const PINCH_START_DISTANCE = 48;
+const PINCH_RELEASE_DISTANCE = 82;
+const PINCH_GRACE_MS = 260;
+const ZOOM_MIN_DELTA = 4.5;
 
 const gestureLabels = {
   "pinch-click": "Pinch click",
@@ -18,7 +22,7 @@ class GestureWorkspace {
   constructor(canvas, ctx) {
     this.canvas = canvas;
     this.ctx = ctx;
-    this.mode = "capture";
+    this.mode = "sandbox";
     this.activeGesture = "pinch-click";
     this.recording = false;
     this.frames = [];
@@ -27,6 +31,8 @@ class GestureWorkspace {
     this.sandbox = createSandboxItems();
     this.selectedIndex = 0;
     this.grabbedId = null;
+    this.lastPinchAt = 0;
+    this.lastPinchCenter = null;
     this.lastAction = "Ready";
     this.lastSwipeAt = 0;
     this.lastTwoHandDistance = null;
@@ -47,6 +53,8 @@ class GestureWorkspace {
     this.frames = [];
     this.trails = new Map();
     this.grabbedId = null;
+    this.lastPinchAt = 0;
+    this.lastPinchCenter = null;
     this.lastTwoHandDistance = null;
   }
 
@@ -55,6 +63,9 @@ class GestureWorkspace {
     this.recording = false;
     this.frames = [];
     this.grabbedId = null;
+    this.lastPinchAt = 0;
+    this.lastPinchCenter = null;
+    this.lastTwoHandDistance = null;
     this.lastAction = mode === "capture" ? "Ready to record" : "Sandbox ready";
   }
 
@@ -171,8 +182,13 @@ class GestureWorkspace {
     const primary = getPrimaryHand(hands);
     const pinch = primary ? getPinch(primary, this.canvas.width) : null;
     const now = performance.now();
+    const grabbed = this.sandbox.find((item) => item.id === this.grabbedId);
+    const pinchDistanceLimit = this.grabbedId ? PINCH_RELEASE_DISTANCE : PINCH_START_DISTANCE;
+    const pinchActive = Boolean(pinch && pinch.distance < pinchDistanceLimit);
 
-    if (pinch?.isPinching) {
+    if (pinchActive) {
+      this.lastPinchAt = now;
+      this.lastPinchCenter = pinch.center;
       const selected = this.sandbox[this.selectedIndex];
 
       if (!this.grabbedId && distance(pinch.center, selected) < selected.radius + 42) {
@@ -180,25 +196,41 @@ class GestureWorkspace {
         this.lastAction = "Grab";
       }
 
-      if (this.grabbedId === selected.id) {
-        selected.x = pinch.center.x;
-        selected.y = pinch.center.y;
+      const activeItem = this.sandbox.find((item) => item.id === this.grabbedId);
+
+      if (activeItem) {
+        activeItem.x = pinch.center.x;
+        activeItem.y = pinch.center.y;
         this.lastAction = "Dragging";
       }
+    } else if (grabbed && now - this.lastPinchAt < PINCH_GRACE_MS) {
+      if (pinch?.center) {
+        this.lastPinchCenter = pinch.center;
+        grabbed.x = pinch.center.x;
+        grabbed.y = pinch.center.y;
+      } else if (this.lastPinchCenter) {
+        grabbed.x = this.lastPinchCenter.x;
+        grabbed.y = this.lastPinchCenter.y;
+      }
+
+      this.lastAction = "Dragging";
     } else if (this.grabbedId) {
       this.grabbedId = null;
+      this.lastPinchCenter = null;
       this.lastAction = "Released";
     }
 
-    const twoHandDistance = getTwoHandDistance(hands, this.canvas.width);
+    const twoHandDistance = this.grabbedId || anyHandPinching(hands, this.canvas.width)
+      ? NaN
+      : getTwoHandDistance(hands, this.canvas.width);
 
     if (Number.isFinite(twoHandDistance)) {
       if (Number.isFinite(this.lastTwoHandDistance)) {
         const delta = twoHandDistance - this.lastTwoHandDistance;
         const selected = this.sandbox[this.selectedIndex];
 
-        if (Math.abs(delta) > 1.2) {
-          selected.scale = clamp(selected.scale + delta * 0.004, 0.45, 2.4);
+        if (Math.abs(delta) > ZOOM_MIN_DELTA) {
+          selected.scale = clamp(selected.scale + delta * 0.0035, 0.45, 2.4);
           this.lastAction = delta > 0 ? "Zoom out" : "Zoom in";
         }
       }
@@ -208,7 +240,7 @@ class GestureWorkspace {
       this.lastTwoHandDistance = null;
     }
 
-    const swipe = primary && !pinch?.isPinching && !Number.isFinite(twoHandDistance)
+    const swipe = primary && !this.grabbedId && !pinchActive && !Number.isFinite(twoHandDistance)
       ? detectSwipe(primary, this.trails.get(primary.handedness), this.canvas.width)
       : null;
 
@@ -298,7 +330,7 @@ class GestureWorkspace {
     this.ctx.fillStyle = "#c7d2df";
     this.ctx.font = "600 16px Inter, system-ui, sans-serif";
     this.ctx.textAlign = "center";
-    this.ctx.fillText("Pinch to drag · Two hands zoom · Open-hand swipe changes selection", this.canvas.width / 2, this.canvas.height - 132);
+    this.ctx.fillText("Pinch-hold to drag · Two open hands zoom · Open-hand swipe switches objects", this.canvas.width / 2, this.canvas.height - 132);
     this.ctx.restore();
   }
 
@@ -403,7 +435,7 @@ function getPinch(hand, canvasWidth) {
 
   return {
     distance: pinchDistance,
-    isPinching: pinchDistance < 46,
+    isPinching: pinchDistance < PINCH_START_DISTANCE,
     center: {
       x: (thumbPoint.x + indexPoint.x) / 2,
       y: (thumbPoint.y + indexPoint.y) / 2
@@ -414,8 +446,10 @@ function getPinch(hand, canvasWidth) {
 function getTwoHandDistance(hands, canvasWidth) {
   if (hands.length < 2) return NaN;
 
-  const first = getPoint(hands[0], 8);
-  const second = getPoint(hands[1], 8);
+  if (!isOpenHand(hands[0], canvasWidth) || !isOpenHand(hands[1], canvasWidth)) return NaN;
+
+  const first = getPoint(hands[0], 0);
+  const second = getPoint(hands[1], 0);
 
   if (!first || !second) return NaN;
 
@@ -423,6 +457,13 @@ function getTwoHandDistance(hands, canvasWidth) {
     { x: canvasWidth - first.x, y: first.y },
     { x: canvasWidth - second.x, y: second.y }
   );
+}
+
+function anyHandPinching(hands, canvasWidth) {
+  return hands.some((hand) => {
+    const pinch = getPinch(hand, canvasWidth);
+    return pinch && pinch.distance < PINCH_RELEASE_DISTANCE;
+  });
 }
 
 function detectSwipe(hand, trail, canvasWidth) {

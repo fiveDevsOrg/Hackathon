@@ -1,6 +1,6 @@
-import { createGestureWorkspace } from "./gesture-trainer.js?v=gesture-lab-1";
-import { createHandTracker } from "./hand-tracker.js?v=gesture-lab-1";
-import { createArenaScene } from "./three-scene.js?v=gesture-lab-1";
+import { createGestureWorkspace } from "./gesture-trainer.js?v=sandbox-rules-1";
+import { createHandTracker } from "./hand-tracker.js?v=sandbox-rules-1";
+import { createArenaScene } from "./three-scene.js?v=sandbox-rules-1";
 
 const video = document.querySelector("#camera");
 const sceneHost = document.querySelector("#scene3d");
@@ -22,10 +22,14 @@ const timeValue = document.querySelector("#timeValue");
 let stream = null;
 let handTracker = null;
 let animationFrame = null;
-let mode = "capture";
+let mode = "sandbox";
 
 const arena = createArenaScene(sceneHost);
 const workspace = createGestureWorkspace(canvas, ctx);
+
+captureModeButton.classList.toggle("active", false);
+sandboxModeButton.classList.toggle("active", true);
+gestureSelect.disabled = true;
 
 captureModeButton.addEventListener("click", () => setMode("capture"));
 sandboxModeButton.addEventListener("click", () => setMode("sandbox"));
@@ -71,7 +75,7 @@ cameraButton.addEventListener("click", async () => {
     workspace.start(mode, gestureSelect.value);
     recordButton.disabled = mode !== "capture";
     cameraButton.textContent = "Stop camera";
-    statusText.textContent = `${handTracker.label}: ${mode === "capture" ? "record gesture samples" : "test gestures in sandbox"}`;
+    statusText.textContent = `${handTracker.label}: test gestures in sandbox`;
     renderLoop();
   } catch (error) {
     if (stream) {
@@ -143,7 +147,7 @@ function setMode(nextMode) {
   workspace.setMode(mode);
   updateMetrics(workspace.snapshot(), []);
   statusText.textContent = stream
-    ? `${handTracker.label}: ${mode === "capture" ? "record gesture samples" : "test gestures in sandbox"}`
+    ? `${handTracker.label}: test gestures in sandbox`
     : (mode === "capture" ? "Capture mode ready" : "Sandbox mode ready");
 }
 
@@ -167,7 +171,7 @@ function updateMetrics(state, hands) {
 
   statusText.textContent = mode === "capture"
     ? "Capture natural gesture movement, then stop recording"
-    : "Pinch to grab, two hands to zoom, swipe left/right to switch items";
+    : "Pinch-hold to drag, use two open hands to zoom, swipe left/right to switch items";
 }
 
 function cameraErrorMessage(error) {

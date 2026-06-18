@@ -28,7 +28,7 @@ class ArenaScene {
     this.raycaster = new THREE.Raycaster();
     this.pointer = new THREE.Vector2();
     this.targetMeshes = new Map();
-    this.clock = new THREE.Clock();
+    this.needsRender = true;
 
     this.buildLighting();
     this.buildTunnel();
@@ -41,7 +41,7 @@ class ArenaScene {
     const height = Math.max(1, Math.round(rect.height));
 
     if (this.width === width && this.height === height) {
-      return;
+      return false;
     }
 
     this.width = width;
@@ -49,6 +49,8 @@ class ArenaScene {
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(width, height, false);
+    this.needsRender = true;
+    return true;
   }
 
   addTarget(target) {
@@ -59,6 +61,7 @@ class ArenaScene {
     mesh.scale.setScalar(target.worldRadius);
     this.scene.add(mesh);
     this.targetMeshes.set(target.id, mesh);
+    this.needsRender = true;
   }
 
   removeTarget(target) {
@@ -71,6 +74,7 @@ class ArenaScene {
     this.scene.remove(mesh);
     disposeObject(mesh);
     this.targetMeshes.delete(target.id);
+    this.needsRender = true;
   }
 
   updateTarget(target) {
@@ -88,14 +92,17 @@ class ArenaScene {
     const depthProgress = THREE.MathUtils.clamp((target.z - FAR_Z) / WORLD_DEPTH, 0, 1);
     const pulse = 1 + Math.sin(performance.now() * 0.008 + target.seed) * 0.08;
     mesh.scale.setScalar(target.worldRadius * pulse * (0.82 + depthProgress * 0.28));
+    this.needsRender = true;
   }
 
   render() {
     this.resize();
-    const elapsed = this.clock.getElapsedTime();
-    this.tunnel.rotation.z = elapsed * 0.025;
-    this.tunnel.position.z = (elapsed * 2.6) % 8;
+    if (!this.needsRender) {
+      return;
+    }
+
     this.renderer.render(this.scene, this.camera);
+    this.needsRender = false;
   }
 
   projectTarget(target) {

@@ -18,11 +18,11 @@
             <p id="statusText">Camera idle</p>
           </div>
           <div class="control-stack">
-            <div class="mode-toggle" aria-label="Mode">
+            <div class="mode-toggle hidden" aria-label="Mode">
               <button id="captureModeButton" class="mode-button active" type="button">Capture</button>
               <button id="sandboxModeButton" class="mode-button" type="button">Sandbox</button>
             </div>
-            <select id="gestureSelect" class="gesture-select" aria-label="Gesture">
+            <select id="gestureSelect" class="gesture-select hidden" aria-label="Gesture">
               <option value="pinch-click">Pinch click</option>
               <option value="pinch-drag">Pinch drag</option>
               <option value="swipe-left">Swipe left</option>
@@ -34,7 +34,7 @@
               <span class="button-icon" aria-hidden="true">●</span>
               Start camera
             </button>
-            <button id="recordButton" type="button" disabled>
+            <button id="recordButton" class="hidden" type="button" disabled>
               Record sample
             </button>
           </div>
@@ -56,6 +56,6 @@
       </section>
     </main>
 
-    <script type="module" src="./src/app.js?v=gesture-lab-1"></script>
+    <script type="module" src="./src/app.js?v=sandbox-rules-1"></script>
   </body>
 </html>
