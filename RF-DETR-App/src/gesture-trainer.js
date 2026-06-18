@@ -250,7 +250,7 @@ class GestureWorkspace {
       : null;
 
     if (swipe && now - this.lastSwipeAt > 760) {
-      this.selectedIndex = wrapIndex(this.selectedIndex + (swipe === "right" ? 1 : -1), this.sandbox.length);
+      this.selectedIndex = getDirectionalSelectionIndex(this.sandbox, this.selectedIndex, swipe);
       this.lastSwipeAt = now;
       this.lastAction = swipe === "right" ? "Swipe right" : "Swipe left";
       this.trails.set(primary.handedness, []);
@@ -547,6 +547,37 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
-function wrapIndex(value, length) {
-  return (value + length) % length;
+function getDirectionalSelectionIndex(items, currentIndex, direction) {
+  const current = items[currentIndex];
+
+  if (!current) return currentIndex;
+
+  const sign = direction === "right" ? 1 : -1;
+  const minimumOffset = Math.max(42, current.radius * current.scale * 0.45);
+  let bestIndex = currentIndex;
+  let bestScore = Infinity;
+
+  for (let index = 0; index < items.length; index += 1) {
+    if (index === currentIndex) {
+      continue;
+    }
+
+    const candidate = items[index];
+    const dx = candidate.x - current.x;
+    const directionalDistance = dx * sign;
+
+    if (directionalDistance < minimumOffset) {
+      continue;
+    }
+
+    const dy = Math.abs(candidate.y - current.y);
+    const score = directionalDistance + dy * 0.42;
+
+    if (score < bestScore) {
+      bestScore = score;
+      bestIndex = index;
+    }
+  }
+
+  return bestIndex;
 }

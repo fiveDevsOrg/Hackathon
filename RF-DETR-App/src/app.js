@@ -1,6 +1,6 @@
-import { createGestureWorkspace } from "./gesture-trainer.js?v=swipe-balanced-1";
-import { createHandTracker } from "./hand-tracker.js?v=swipe-balanced-1";
-import { createArenaScene } from "./three-scene.js?v=swipe-balanced-1";
+import { createGestureWorkspace } from "./gesture-trainer.js?v=spatial-swipe-1";
+import { createHandTracker } from "./hand-tracker.js?v=spatial-swipe-1";
+import { createArenaScene } from "./three-scene.js?v=spatial-swipe-1";
 
 const video = document.querySelector("#camera");
 const sceneHost = document.querySelector("#scene3d");
