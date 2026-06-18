@@ -14,6 +14,14 @@ A working demo is the floor. The winner is whoever gets closest to **real dollar
 4. **Copy [`PROJECT-TEMPLATE.md`](./PROJECT-TEMPLATE.md)** into your own repo's `README.md`
    and fill it in.
 
+## How we work
+
+- **This repo (`Hackathon`)** = shared rules + your personal notes. Work on your own
+  branch — `Polo_Dev`, `Yemi_Dev`, etc. — for your plan, standups, and idea claim. PR to
+  `main` only for shared changes.
+- **Your `mvp-<name>` repo** = where you actually build, deploy, and charge. Your stack,
+  your Vercel project, your money mechanism. Branch freely *inside* it for previews.
+
 ## The scoreboard (live on the [org page](https://github.com/fiveDevsOrg))
 
 | Level | Proof | Badge |
@@ -27,7 +35,7 @@ A working demo is the floor. The winner is whoever gets closest to **real dollar
 
 | Repo | Owner |
 |------|-------|
-| [`hackathon`](https://github.com/fiveDevsOrg/hackathon) | shared (this repo) |
+| [`Hackathon`](https://github.com/fiveDevsOrg/Hackathon) | shared (this repo) |
 | `mvp-yemi` | @yemi-bot |
 | `mvp-poloxbt` … `mvp-dev5` | one per builder |
 
