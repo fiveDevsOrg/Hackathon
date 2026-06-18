@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>RF-DETR App</title>
+    <link rel="stylesheet" href="./src/styles.css">
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="camera-stage" aria-label="Camera detection workspace">
+        <video id="camera" playsinline muted></video>
+        <canvas id="overlay"></canvas>
+        <div class="top-bar">
+          <div>
+            <h1>RF-DETR App</h1>
+            <p id="statusText">Camera idle</p>
+          </div>
+          <button id="cameraButton" type="button">
+            <span class="button-icon" aria-hidden="true">●</span>
+            Start camera
+          </button>
+        </div>
+        <div class="metric-strip" aria-live="polite">
+          <div>
+            <span class="metric-label">Detector</span>
+            <strong id="detectorMode">Standby</strong>
+          </div>
+          <div>
+            <span class="metric-label">People</span>
+            <strong id="personCount">0</strong>
+          </div>
+          <div>
+            <span class="metric-label">Confidence</span>
+            <strong id="confidenceValue">0%</strong>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script type="module" src="./src/app.js"></script>
+  </body>
+</html>
