@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { classify, loadModel, type Label } from "./model";
+import { activeBackend, classify, loadModel, type Label } from "./model";
 
 const COMMANDS: Label[] = ["sit", "down", "stand"];
 const MATCH_CONF = 0.6;
@@ -17,6 +17,7 @@ export default function TryTrainer() {
   const [mode, setMode] = useState<"camera" | "upload">("camera");
   const [err, setErr] = useState<string | null>(null);
   const [voiceOn, setVoiceOn] = useState(false);
+  const [engine, setEngine] = useState("");
 
   // training-loop state surfaced to the UI
   const [running, setRunning] = useState(false);
@@ -58,6 +59,7 @@ export default function TryTrainer() {
     setPhase("loading");
     try {
       await loadModel((f) => setLoadPct(f));
+      setEngine(activeBackend);
       setPhase("ready");
     } catch (e) {
       setErr("Could not load the model. Try a desktop browser (Chrome/Edge).");
@@ -124,7 +126,7 @@ export default function TryTrainer() {
     setErr(null);
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "environment", width: 960, height: 540 },
+        video: { facingMode: "environment", width: { ideal: 640 }, height: { ideal: 480 } },
         audio: false,
       });
       if (videoRef.current) {
@@ -365,7 +367,7 @@ export default function TryTrainer() {
         )}
 
         <p className="text-center text-xs text-muted/70">
-          Same model as the full product · 95% posture accuracy · 100% on-device
+          Same model · 95% accuracy · on-device{engine ? ` · engine: ${engine}` : ""}
         </p>
       </div>
     </div>

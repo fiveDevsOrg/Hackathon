@@ -23,6 +23,15 @@ declare global {
 let ortPromise: Promise<any> | null = null;
 let sessionPromise: Promise<any> | null = null;
 let ortRef: any = null;
+export let activeBackend = "";
+
+function isMobile(): boolean {
+  if (typeof navigator === "undefined") return false;
+  return (
+    /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
+    (navigator.maxTouchPoints > 1 && /Macintosh/.test(navigator.userAgent))
+  );
+}
 
 function loadOrt(): Promise<any> {
   if (typeof window !== "undefined" && window.ort) return Promise.resolve(window.ort);
@@ -73,17 +82,23 @@ export async function loadModel(onProgress?: (frac: number) => void): Promise<vo
     }
     onProgress?.(1);
 
-    try {
-      return await ort.InferenceSession.create(bytes, {
-        executionProviders: ["webgpu"],
-        graphOptimizationLevel: "all",
-      });
-    } catch {
-      return await ort.InferenceSession.create(bytes, {
-        executionProviders: ["wasm"],
-        graphOptimizationLevel: "all",
-      });
+    // Mobile Safari's WebGPU accumulates memory and auto-reloads the tab under
+    // pressure, so force the bounded/reused WASM heap there. Desktop keeps the
+    // fast WebGPU path (WASM fallback).
+    const providers = isMobile() ? ["wasm"] : ["webgpu", "wasm"];
+    for (const ep of providers) {
+      try {
+        const s = await ort.InferenceSession.create(bytes, {
+          executionProviders: [ep],
+          graphOptimizationLevel: "all",
+        });
+        activeBackend = ep;
+        return s;
+      } catch {
+        /* try next provider */
+      }
     }
+    throw new Error("no execution provider could load the model");
   })();
   await sessionPromise;
 }
@@ -139,5 +154,8 @@ export async function classify(src: CanvasImageSource): Promise<Verdict> {
     }
   }
   const scores = [0, 1, 2].map((c) => sig(labels[bestQ * C + c]));
+  // free input + output backing buffers so memory stays flat across the loop
+  for (const k in out) (out[k] as { dispose?: () => void })?.dispose?.();
+  (tensor as { dispose?: () => void })?.dispose?.();
   return { label: LABELS[bestC], conf: best, scores };
 }
