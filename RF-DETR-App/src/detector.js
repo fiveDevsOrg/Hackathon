@@ -1,4 +1,5 @@
 export async function createDetector() {
+  const framingDetector = createFramingDetector();
   const rfDetr = await tryCreateRfDetrDetector();
 
   if (rfDetr) {
@@ -6,10 +7,10 @@ export async function createDetector() {
   }
 
   if ("FaceDetector" in window) {
-    return createFaceDetector();
+    return createFaceDetector(framingDetector);
   }
 
-  return createFramingDetector();
+  return framingDetector;
 }
 
 async function tryCreateRfDetrDetector() {
@@ -30,17 +31,30 @@ async function tryCreateRfDetrDetector() {
   };
 }
 
-function createFaceDetector() {
+function createFaceDetector(fallbackDetector) {
   const faceDetector = new window.FaceDetector({
     fastMode: true,
     maxDetectedFaces: 4
   });
+  let missedFrames = 0;
 
   return {
-    label: "FaceDetector MVP",
+    label: "FaceDetector + guide",
     async detect(video, canvas) {
       const faces = await faceDetector.detect(video).catch(() => []);
       const scale = getObjectFitScale(video, canvas);
+
+      if (!faces.length) {
+        missedFrames += 1;
+
+        if (missedFrames >= 8) {
+          return fallbackDetector.detect(video, canvas);
+        }
+
+        return [];
+      }
+
+      missedFrames = 0;
 
       return faces.map((face) => {
         const faceBox = scaleBox(face.boundingBox, scale);
@@ -68,7 +82,7 @@ function createFramingDetector() {
       const height = canvas.height * 0.48;
 
       return [{
-        label: "head + shoulders",
+        label: "framing guide",
         score: 0.45,
         box: {
           x: (canvas.width - width) / 2,

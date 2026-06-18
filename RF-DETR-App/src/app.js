@@ -66,16 +66,22 @@ async function renderLoop() {
   resizeCanvas();
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-  const detections = await detector.detect(video, canvas);
-  drawDetections(detections);
-  updateMetrics(detections);
+  try {
+    const detections = await detector.detect(video, canvas);
+    drawDetections(detections);
+    updateMetrics(detections);
+  } catch (error) {
+    console.error("Detector failed", error);
+    statusText.textContent = "Detector error";
+  }
 
   animationFrame = requestAnimationFrame(renderLoop);
 }
 
 function resizeCanvas() {
-  const width = canvas.clientWidth;
-  const height = canvas.clientHeight;
+  const rect = canvas.getBoundingClientRect();
+  const width = Math.round(rect.width);
+  const height = Math.round(rect.height);
 
   if (canvas.width !== width || canvas.height !== height) {
     canvas.width = width;
