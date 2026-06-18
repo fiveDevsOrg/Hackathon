@@ -1,23 +1,12 @@
-# RF-DETR Model Assets
+# Model Assets
 
-Place exported RF-DETR browser inference assets here when they are available.
+Place future browser inference assets here when they are available.
 
-Expected starting point:
+The current app uses MediaPipe Hand Landmarker from a hosted model URL and does not require local model files in this directory.
 
-- `rfdetr-manifest.json`: model metadata and class labels
-- model weights/runtime files referenced by the manifest
+Possible future assets:
 
-The current MVP uses the local camera and an adapter in `src/detector.js`. When RF-DETR assets are available, wire the `tryCreateRfDetrDetector` function to the selected browser runtime and return detections in this shape:
-
-```json
-{
-  "label": "head + shoulders",
-  "score": 0.92,
-  "box": {
-    "x": 100,
-    "y": 80,
-    "width": 320,
-    "height": 420
-  }
-}
-```
+- Custom gesture classifier metadata
+- TensorFlow.js or ONNX Runtime Web model files
+- RF-DETR assets if object detection becomes part of the interaction layer
+- Gesture label maps and calibration defaults

@@ -1,110 +1,220 @@
-const ATTEMPT_MS = 2200;
-const TRAIL_LIMIT = 12;
+const STORAGE_KEY = "gesture-lab-samples-v1";
+const TRAIL_LIMIT = 18;
 
-const prompts = [
-  {
-    id: "pinch",
-    title: "Pinch click",
-    instruction: "Touch thumb and index finger together, then release.",
-    metric: "Pinch"
-  },
-  {
-    id: "swipe-right",
-    title: "Swipe right",
-    instruction: "Move one open hand quickly from left to right.",
-    metric: "Swipe"
-  },
-  {
-    id: "zoom-out",
-    title: "Zoom out",
-    instruction: "Use two hands and move them apart.",
-    metric: "Zoom"
-  }
-];
+const gestureLabels = {
+  "pinch-click": "Pinch click",
+  "pinch-drag": "Pinch drag",
+  "swipe-left": "Swipe left",
+  "swipe-right": "Swipe right",
+  "zoom-in": "Zoom in",
+  "zoom-out": "Zoom out"
+};
 
-export function createGestureTrainer(canvas, ctx) {
-  return new GestureTrainer(canvas, ctx);
+export function createGestureWorkspace(canvas, ctx) {
+  return new GestureWorkspace(canvas, ctx);
 }
 
-class GestureTrainer {
+class GestureWorkspace {
   constructor(canvas, ctx) {
     this.canvas = canvas;
     this.ctx = ctx;
-    this.running = false;
-    this.promptIndex = 0;
+    this.mode = "capture";
+    this.activeGesture = "pinch-click";
+    this.recording = false;
     this.frames = [];
-    this.samples = [];
-    this.lastScore = 0;
-    this.lastResult = "Ready";
-    this.attemptStart = 0;
+    this.samples = loadSamples();
     this.trails = new Map();
+    this.sandbox = createSandboxItems();
+    this.selectedIndex = 0;
+    this.grabbedId = null;
+    this.lastAction = "Ready";
+    this.lastSwipeAt = 0;
+    this.lastTwoHandDistance = null;
+    this.layoutKey = "";
   }
 
-  start(now = performance.now()) {
-    this.running = true;
-    this.promptIndex = 0;
+  start(mode, gesture) {
+    this.mode = mode;
+    this.activeGesture = gesture;
+    this.recording = false;
     this.frames = [];
-    this.samples = [];
-    this.lastScore = 0;
-    this.lastResult = "Perform the prompted gesture";
-    this.attemptStart = now;
     this.trails = new Map();
+    this.lastAction = mode === "capture" ? "Ready to record" : "Sandbox ready";
   }
 
   stop() {
-    this.running = false;
+    this.recording = false;
     this.frames = [];
     this.trails = new Map();
+    this.grabbedId = null;
+    this.lastTwoHandDistance = null;
   }
 
-  update(hands, now = performance.now()) {
-    if (!this.running) {
-      return this.snapshot();
+  setMode(mode) {
+    this.mode = mode;
+    this.recording = false;
+    this.frames = [];
+    this.grabbedId = null;
+    this.lastAction = mode === "capture" ? "Ready to record" : "Sandbox ready";
+  }
+
+  setGesture(gesture) {
+    this.activeGesture = gesture;
+  }
+
+  isRecording() {
+    return this.recording;
+  }
+
+  startRecording(gesture) {
+    this.activeGesture = gesture;
+    this.recording = true;
+    this.frames = [];
+    this.lastAction = "Recording";
+  }
+
+  stopRecording() {
+    if (!this.recording) {
+      return;
     }
 
-    this.frames.push(captureFrame(hands, now, this.canvas.width));
+    this.recording = false;
+
+    if (this.frames.length < 6) {
+      this.lastAction = "Sample too short";
+      this.frames = [];
+      return;
+    }
+
+    const sample = {
+      id: crypto.randomUUID(),
+      gesture: this.activeGesture,
+      label: gestureLabels[this.activeGesture],
+      createdAt: new Date().toISOString(),
+      durationMs: Math.round(this.frames[this.frames.length - 1].t - this.frames[0].t),
+      frameCount: this.frames.length,
+      summary: summarizeFrames(this.frames),
+      frames: this.frames
+    };
+
+    this.samples.push(sample);
+    saveSamples(this.samples);
+    this.frames = [];
+    this.lastAction = `Stored ${sample.label}`;
+  }
+
+  update(hands, mode) {
+    this.mode = mode;
+    this.layoutSandboxItems();
     this.updateTrails(hands);
 
-    if (now - this.attemptStart >= ATTEMPT_MS) {
-      this.finishAttempt(now);
+    if (this.mode === "capture" && this.recording) {
+      this.frames.push(captureFrame(hands, performance.now(), this.canvas.width));
+    }
+
+    if (this.mode === "sandbox") {
+      this.updateSandbox(hands);
     }
 
     return this.snapshot();
   }
 
-  draw(hands) {
-    this.drawTrainerStage();
+  draw(hands, mode) {
+    this.layoutSandboxItems();
+
+    if (mode === "sandbox") {
+      this.drawSandbox();
+    } else {
+      this.drawCapturePanel();
+    }
+
     this.drawHandHints(hands);
   }
 
+  layoutSandboxItems() {
+    const key = `${this.canvas.width}x${this.canvas.height}`;
+
+    if (this.layoutKey === key) {
+      return;
+    }
+
+    this.layoutKey = key;
+
+    const centerY = this.canvas.height * 0.48;
+    const gap = Math.min(280, this.canvas.width * 0.24);
+    const centerX = this.canvas.width / 2;
+    const positions = [
+      { x: centerX - gap, y: centerY },
+      { x: centerX, y: centerY + Math.min(90, this.canvas.height * 0.1) },
+      { x: centerX + gap, y: centerY }
+    ];
+
+    for (let index = 0; index < this.sandbox.length; index += 1) {
+      this.sandbox[index].x = positions[index].x;
+      this.sandbox[index].y = positions[index].y;
+      this.sandbox[index].radius = Math.max(48, Math.min(78, this.canvas.width * 0.07));
+    }
+  }
+
   snapshot() {
-    const prompt = prompts[this.promptIndex];
+    const selected = this.sandbox[this.selectedIndex];
 
     return {
-      prompt,
-      score: this.lastScore,
-      result: this.lastResult,
-      attempts: this.samples.length,
-      running: this.running
+      label: this.mode === "capture" ? gestureLabels[this.activeGesture] : selected.label,
+      samples: this.samples.length,
+      action: this.lastAction,
+      state: this.recording ? "Recording" : this.lastAction
     };
   }
 
-  finishAttempt(now) {
-    const prompt = prompts[this.promptIndex];
-    const evaluation = evaluateGesture(prompt.id, this.frames);
-    const sample = {
-      gesture: prompt.id,
-      score: evaluation.score,
-      passed: evaluation.passed,
-      frames: this.frames
-    };
+  updateSandbox(hands) {
+    const primary = getPrimaryHand(hands);
+    const pinch = primary ? getPinch(primary, this.canvas.width) : null;
+    const now = performance.now();
 
-    this.samples.push(sample);
-    this.lastScore = evaluation.score;
-    this.lastResult = evaluation.passed ? `Good ${prompt.metric.toLowerCase()}` : `Try ${prompt.metric.toLowerCase()} again`;
-    this.promptIndex = (this.promptIndex + 1) % prompts.length;
-    this.frames = [];
-    this.attemptStart = now;
+    if (pinch?.isPinching) {
+      const selected = this.sandbox[this.selectedIndex];
+
+      if (!this.grabbedId && distance(pinch.center, selected) < selected.radius + 42) {
+        this.grabbedId = selected.id;
+        this.lastAction = "Grab";
+      }
+
+      if (this.grabbedId === selected.id) {
+        selected.x = pinch.center.x;
+        selected.y = pinch.center.y;
+        this.lastAction = "Dragging";
+      }
+    } else if (this.grabbedId) {
+      this.grabbedId = null;
+      this.lastAction = "Released";
+    }
+
+    const twoHandDistance = getTwoHandDistance(hands, this.canvas.width);
+
+    if (Number.isFinite(twoHandDistance)) {
+      if (Number.isFinite(this.lastTwoHandDistance)) {
+        const delta = twoHandDistance - this.lastTwoHandDistance;
+        const selected = this.sandbox[this.selectedIndex];
+
+        if (Math.abs(delta) > 1.2) {
+          selected.scale = clamp(selected.scale + delta * 0.004, 0.45, 2.4);
+          this.lastAction = delta > 0 ? "Zoom out" : "Zoom in";
+        }
+      }
+
+      this.lastTwoHandDistance = twoHandDistance;
+    } else {
+      this.lastTwoHandDistance = null;
+    }
+
+    const swipe = primary ? detectSwipe(this.trails.get(primary.handedness), now) : null;
+
+    if (swipe && now - this.lastSwipeAt > 650) {
+      this.selectedIndex = wrapIndex(this.selectedIndex + (swipe === "right" ? 1 : -1), this.sandbox.length);
+      this.lastSwipeAt = now;
+      this.lastAction = swipe === "right" ? "Swipe right" : "Swipe left";
+    }
   }
 
   updateTrails(hands) {
@@ -120,7 +230,7 @@ class GestureTrainer {
       const id = hand.handedness;
       seen.add(id);
       const trail = this.trails.get(id) || [];
-      trail.unshift({ x: this.canvas.width - indexTip.x, y: indexTip.y });
+      trail.unshift({ x: this.canvas.width - indexTip.x, y: indexTip.y, t: performance.now() });
       this.trails.set(id, trail.slice(0, TRAIL_LIMIT));
     }
 
@@ -137,32 +247,55 @@ class GestureTrainer {
     }
   }
 
-  drawTrainerStage() {
-    const prompt = prompts[this.promptIndex];
-    const progress = Math.min(1, (performance.now() - this.attemptStart) / ATTEMPT_MS);
-
+  drawCapturePanel() {
     this.ctx.save();
-    this.ctx.fillStyle = "rgba(5, 9, 14, 0.44)";
+    this.ctx.fillStyle = "rgba(5, 9, 14, 0.48)";
     this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
-    this.ctx.fillStyle = "#f7fafc";
     this.ctx.textAlign = "center";
+    this.ctx.fillStyle = "#f7fafc";
     this.ctx.font = "800 34px Inter, system-ui, sans-serif";
-    this.ctx.fillText(prompt.title, this.canvas.width / 2, this.canvas.height * 0.36);
+    this.ctx.fillText(gestureLabels[this.activeGesture], this.canvas.width / 2, this.canvas.height * 0.34);
     this.ctx.font = "500 17px Inter, system-ui, sans-serif";
     this.ctx.fillStyle = "#c7d2df";
-    this.ctx.fillText(prompt.instruction, this.canvas.width / 2, this.canvas.height * 0.36 + 36);
-
-    const barWidth = Math.min(460, this.canvas.width * 0.72);
-    const barX = (this.canvas.width - barWidth) / 2;
-    const barY = this.canvas.height * 0.36 + 64;
-    this.ctx.fillStyle = "rgba(255,255,255,0.16)";
-    this.ctx.fillRect(barX, barY, barWidth, 8);
-    this.ctx.fillStyle = "#35d07f";
-    this.ctx.fillRect(barX, barY, barWidth * progress, 8);
-
+    this.ctx.fillText(captureInstruction(this.activeGesture), this.canvas.width / 2, this.canvas.height * 0.34 + 38);
     this.ctx.font = "700 20px Inter, system-ui, sans-serif";
-    this.ctx.fillStyle = this.lastScore >= 70 ? "#35d07f" : "#f5c84b";
-    this.ctx.fillText(`${this.lastResult} · ${this.lastScore}%`, this.canvas.width / 2, barY + 44);
+    this.ctx.fillStyle = this.recording ? "#ff5a6a" : "#35d07f";
+    this.ctx.fillText(this.recording ? `${this.frames.length} frames captured` : `${this.samples.length} samples stored`, this.canvas.width / 2, this.canvas.height * 0.34 + 78);
+    this.ctx.restore();
+  }
+
+  drawSandbox() {
+    this.ctx.save();
+    this.ctx.fillStyle = "rgba(5, 9, 14, 0.28)";
+    this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+
+    for (let index = 0; index < this.sandbox.length; index += 1) {
+      const item = this.sandbox[index];
+      const selected = index === this.selectedIndex;
+      const radius = item.radius * item.scale;
+
+      this.ctx.save();
+      this.ctx.translate(item.x, item.y);
+      this.ctx.fillStyle = selected ? item.color : "rgba(199, 210, 223, 0.32)";
+      this.ctx.strokeStyle = selected ? "#ffffff" : "rgba(255,255,255,0.32)";
+      this.ctx.lineWidth = selected ? 4 : 2;
+      this.ctx.shadowColor = selected ? item.color : "transparent";
+      this.ctx.shadowBlur = selected ? 22 : 0;
+      this.ctx.beginPath();
+      this.ctx.roundRect(-radius, -radius * 0.72, radius * 2, radius * 1.44, 14);
+      this.ctx.fill();
+      this.ctx.stroke();
+      this.ctx.fillStyle = "#061017";
+      this.ctx.font = "800 18px Inter, system-ui, sans-serif";
+      this.ctx.textAlign = "center";
+      this.ctx.fillText(item.label, 0, 6);
+      this.ctx.restore();
+    }
+
+    this.ctx.fillStyle = "#c7d2df";
+    this.ctx.font = "600 16px Inter, system-ui, sans-serif";
+    this.ctx.textAlign = "center";
+    this.ctx.fillText("Pinch selected item to drag · Two hands zoom · Swipe changes selection", this.canvas.width / 2, this.canvas.height - 132);
     this.ctx.restore();
   }
 
@@ -212,6 +345,14 @@ class GestureTrainer {
   }
 }
 
+function createSandboxItems() {
+  return [
+    { id: "photo", label: "Photo", x: 0, y: 0, radius: 74, scale: 1, color: "#35d07f" },
+    { id: "card", label: "Card", x: 0, y: 0, radius: 68, scale: 1, color: "#59a9ff" },
+    { id: "panel", label: "Panel", x: 0, y: 0, radius: 78, scale: 1, color: "#f5c84b" }
+  ];
+}
+
 function captureFrame(hands, now, canvasWidth) {
   return {
     t: now,
@@ -220,66 +361,92 @@ function captureFrame(hands, now, canvasWidth) {
       wrist: pointToFeature(getPoint(hand, 0), canvasWidth),
       thumbTip: pointToFeature(getPoint(hand, 4), canvasWidth),
       indexTip: pointToFeature(getPoint(hand, 8), canvasWidth),
-      middleTip: pointToFeature(getPoint(hand, 12), canvasWidth)
+      middleTip: pointToFeature(getPoint(hand, 12), canvasWidth),
+      landmarks: hand.landmarks.map((point) => pointToFeature(point, canvasWidth))
     }))
   };
 }
 
-function evaluateGesture(gesture, frames) {
-  if (gesture === "pinch") {
-    return evaluatePinch(frames);
-  }
-
-  if (gesture === "swipe-right") {
-    return evaluateSwipeRight(frames);
-  }
-
-  return evaluateZoomOut(frames);
+function summarizeFrames(frames) {
+  return {
+    handsSeen: Math.max(...frames.map((frame) => frame.hands.length)),
+    durationMs: Math.round(frames[frames.length - 1].t - frames[0].t),
+    frameCount: frames.length
+  };
 }
 
-function evaluatePinch(frames) {
-  const distances = frames.flatMap((frame) => frame.hands.map((hand) => distance(hand.thumbTip, hand.indexTip)).filter(Number.isFinite));
-  const minDistance = Math.min(...distances);
-  const maxDistance = Math.max(...distances);
-  const closeScore = clampScore(100 - minDistance * 2.4);
-  const motionScore = clampScore((maxDistance - minDistance) * 1.8);
-  const score = Math.round(closeScore * 0.72 + motionScore * 0.28);
-
-  return { score, passed: score >= 70 };
+function captureInstruction(gesture) {
+  if (gesture === "pinch-click") return "Close thumb and index, then release when done.";
+  if (gesture === "pinch-drag") return "Pinch, move while holding, then release.";
+  if (gesture === "swipe-left") return "Move one hand naturally from right to left.";
+  if (gesture === "swipe-right") return "Move one hand naturally from left to right.";
+  if (gesture === "zoom-in") return "Use two hands and bring them closer together.";
+  return "Use two hands and move them apart.";
 }
 
-function evaluateSwipeRight(frames) {
-  const score = Math.max(...frames[0]?.hands.map((_, handIndex) => {
-    const points = frames.map((frame) => frame.hands[handIndex]?.indexTip).filter(Boolean);
+function getPrimaryHand(hands) {
+  return hands[0] || null;
+}
 
-    if (points.length < 3) {
-      return 0;
+function getPinch(hand, canvasWidth) {
+  const thumb = getPoint(hand, 4);
+  const index = getPoint(hand, 8);
+
+  if (!thumb || !index) return null;
+
+  const thumbPoint = { x: canvasWidth - thumb.x, y: thumb.y };
+  const indexPoint = { x: canvasWidth - index.x, y: index.y };
+  const pinchDistance = distance(thumbPoint, indexPoint);
+
+  return {
+    distance: pinchDistance,
+    isPinching: pinchDistance < 46,
+    center: {
+      x: (thumbPoint.x + indexPoint.x) / 2,
+      y: (thumbPoint.y + indexPoint.y) / 2
     }
-
-    const dx = points[points.length - 1].x - points[0].x;
-    const dy = Math.abs(points[points.length - 1].y - points[0].y);
-    return clampScore(dx * 0.72 - dy * 0.18);
-  }) || [0]);
-
-  return { score: Math.round(score), passed: score >= 70 };
+  };
 }
 
-function evaluateZoomOut(frames) {
-  const distances = frames.map((frame) => {
-    if (frame.hands.length < 2) {
-      return null;
-    }
+function getTwoHandDistance(hands, canvasWidth) {
+  if (hands.length < 2) return NaN;
 
-    return distance(frame.hands[0].indexTip, frame.hands[1].indexTip);
-  }).filter(Number.isFinite);
+  const first = getPoint(hands[0], 8);
+  const second = getPoint(hands[1], 8);
 
-  if (distances.length < 3) {
-    return { score: 0, passed: false };
+  if (!first || !second) return NaN;
+
+  return distance(
+    { x: canvasWidth - first.x, y: first.y },
+    { x: canvasWidth - second.x, y: second.y }
+  );
+}
+
+function detectSwipe(trail, now) {
+  void now;
+
+  if (!trail || trail.length < 8) return null;
+
+  const newest = trail[0];
+  const oldest = trail[Math.min(trail.length - 1, 10)];
+  const dx = newest.x - oldest.x;
+  const dy = Math.abs(newest.y - oldest.y);
+
+  if (Math.abs(dx) < 120 || dy > 90) return null;
+
+  return dx > 0 ? "right" : "left";
+}
+
+function loadSamples() {
+  try {
+    return JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
+  } catch {
+    return [];
   }
+}
 
-  const delta = distances[distances.length - 1] - distances[0];
-  const score = Math.round(clampScore(delta * 0.7));
-  return { score, passed: score >= 70 };
+function saveSamples(samples) {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(samples));
 }
 
 function getPoint(hand, index) {
@@ -287,21 +454,19 @@ function getPoint(hand, index) {
 }
 
 function pointToFeature(point, canvasWidth) {
-  if (!point) {
-    return null;
-  }
-
+  if (!point) return null;
   return { x: canvasWidth - point.x, y: point.y, z: point.z };
 }
 
 function distance(a, b) {
-  if (!a || !b) {
-    return NaN;
-  }
-
+  if (!a || !b) return NaN;
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
-function clampScore(value) {
-  return Math.max(0, Math.min(100, value));
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function wrapIndex(value, length) {
+  return (value + length) % length;
 }

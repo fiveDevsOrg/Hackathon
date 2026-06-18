@@ -87,7 +87,9 @@ p {
   font-size: 14px;
 }
 
-#cameraButton {
+#cameraButton,
+#recordButton,
+.gesture-select {
   display: inline-flex;
   align-items: center;
   gap: 10px;
@@ -99,6 +101,11 @@ p {
   background: rgba(17, 25, 34, 0.78);
   backdrop-filter: blur(14px);
   cursor: pointer;
+}
+
+.gesture-select {
+  width: 100%;
+  appearance: none;
 }
 
 .control-stack {
@@ -131,12 +138,15 @@ p {
   background: #35d07f;
 }
 
-#cameraButton:hover {
+#cameraButton:hover,
+#recordButton:hover,
+.gesture-select:hover {
   border-color: rgba(255, 255, 255, 0.42);
   background: rgba(24, 35, 47, 0.86);
 }
 
-#cameraButton:disabled {
+#cameraButton:disabled,
+#recordButton:disabled {
   cursor: progress;
   opacity: 0.72;
 }
@@ -159,7 +169,7 @@ p {
   font-size: 14px;
   line-height: 1.45;
   text-align: right;
-  content: "Use your wrists as blades. Green targets score. Red hazards reset the streak.";
+  content: "Capture gestures, store samples locally, then test pinch, zoom, and swipe behavior in the sandbox.";
   pointer-events: none;
 }
 
@@ -210,6 +220,11 @@ p {
   #cameraButton {
     width: 100%;
     justify-content: center;
+  }
+
+  #recordButton,
+  .gesture-select {
+    width: 100%;
   }
 
   .control-stack,

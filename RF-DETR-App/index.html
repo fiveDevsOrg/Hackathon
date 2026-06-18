@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Slash Rush</title>
+    <title>Gesture Lab</title>
     <link rel="stylesheet" href="./src/styles.css">
   </head>
   <body>
@@ -14,37 +14,48 @@
         <canvas id="overlay"></canvas>
         <div class="top-bar">
           <div>
-            <h1>Slash Rush</h1>
+            <h1>Gesture Lab</h1>
             <p id="statusText">Camera idle</p>
           </div>
           <div class="control-stack">
             <div class="mode-toggle" aria-label="Mode">
-              <button id="gameModeButton" class="mode-button active" type="button">Slash Game</button>
-              <button id="trainerModeButton" class="mode-button" type="button">Gesture Trainer</button>
+              <button id="captureModeButton" class="mode-button active" type="button">Capture</button>
+              <button id="sandboxModeButton" class="mode-button" type="button">Sandbox</button>
             </div>
+            <select id="gestureSelect" class="gesture-select" aria-label="Gesture">
+              <option value="pinch-click">Pinch click</option>
+              <option value="pinch-drag">Pinch drag</option>
+              <option value="swipe-left">Swipe left</option>
+              <option value="swipe-right">Swipe right</option>
+              <option value="zoom-in">Zoom in</option>
+              <option value="zoom-out">Zoom out</option>
+            </select>
             <button id="cameraButton" type="button">
               <span class="button-icon" aria-hidden="true">●</span>
-              Start game
+              Start camera
+            </button>
+            <button id="recordButton" type="button" disabled>
+              Record sample
             </button>
           </div>
         </div>
         <div class="metric-strip" aria-live="polite">
           <div>
-            <span id="metricOneLabel" class="metric-label">Score</span>
+            <span id="metricOneLabel" class="metric-label">Gesture</span>
             <strong id="scoreValue">0</strong>
           </div>
           <div>
-            <span id="metricTwoLabel" class="metric-label">Streak</span>
+            <span id="metricTwoLabel" class="metric-label">Samples</span>
             <strong id="streakValue">0</strong>
           </div>
           <div>
-            <span id="metricThreeLabel" class="metric-label">Time</span>
-            <strong id="timeValue">60</strong>
+            <span id="metricThreeLabel" class="metric-label">State</span>
+            <strong id="timeValue">Idle</strong>
           </div>
         </div>
       </section>
     </main>
 
-    <script type="module" src="./src/app.js?v=gesture-trainer-1"></script>
+    <script type="module" src="./src/app.js?v=gesture-lab-1"></script>
   </body>
 </html>

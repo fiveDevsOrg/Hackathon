@@ -100,12 +100,13 @@ Near-term recommendation:
 
 Implemented trainer MVP:
 
-- Added a mode toggle between `Slash Game` and `Gesture Trainer`.
+- Replaced the game mode with a strict gesture capture and sandbox environment.
 - Added MediaPipe Hand Landmarker for detailed hand keypoints.
-- Added prompts for `Pinch click`, `Swipe right`, and `Zoom out`.
-- Added short attempt windows that capture hand landmark sequences.
-- Added rule-based scoring for the first gesture set.
-- Added session sample counts for captured gesture attempts.
+- Removed the fixed 2.2-second capture window.
+- Added user-controlled recording: start recording, perform gesture naturally, stop recording.
+- Stored captured gesture samples in browser `localStorage`.
+- Added capture labels for pinch click, pinch drag, swipe left, swipe right, zoom in, and zoom out.
+- Added sandbox mode where items can be pinch-grabbed, dragged, zoomed with two hands, and selected with swipes.
 - Kept the camera hidden while rendering fingertip hints and motion trails.
 
 ## Commits From This Session
@@ -126,6 +127,7 @@ Implemented trainer MVP:
 | `a457e27` | Hide camera and skeleton during gameplay |
 | `5403ab4` | Render Slash Rush targets in Three.js |
 | `db5dbb1` | Document gesture control training direction |
+| `2169b88` | Add hand gesture trainer mode |
 
 ## Security Note
 
@@ -137,5 +139,6 @@ A GitHub PAT was accidentally placed in Azure blob markdown content during setup
 - Tune pose confidence thresholds if detection flickers.
 - Decide whether RF-DETR should be used for person/head detection, with Pose Landmarker retained for skeleton overlays.
 - Add a real RF-DETR browser model asset or backend inference path when available.
-- Prototype MediaPipe Hand Landmarker for pinch/swipe/zoom gestures.
-- Add a Gesture Trainer mode that prompts the user, records landmark sequences, scores quality, and stores labeled examples for future model training.
+- Add export/import for captured gesture datasets.
+- Add a sample browser for reviewing and deleting stored captures.
+- Add calibration and smoothing before training classifiers.
