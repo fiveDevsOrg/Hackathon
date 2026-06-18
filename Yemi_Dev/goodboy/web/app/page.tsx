@@ -1,10 +1,10 @@
+import Link from "next/link";
 import Nav from "./components/Nav";
 import TrainerMock from "./components/TrainerMock";
 import WaitlistForm from "./components/WaitlistForm";
 import Faq from "./components/Faq";
-
-// A real Stripe Payment Link gets swapped in here later. All "$7" CTAs point to it.
-const STRIPE_LINK = "#";
+import CheckoutButton from "./components/CheckoutButton";
+import StickyCta from "./components/StickyCta";
 
 export default function Home() {
   return (
@@ -14,7 +14,8 @@ export default function Home() {
       {/* film grain */}
       <div className="pointer-events-none absolute inset-0 bg-grain opacity-[0.04] mix-blend-soft-light" />
 
-      <Nav ctaHref={STRIPE_LINK} />
+      <Nav />
+      <StickyCta />
 
       <main className="relative">
         {/* ============================== HERO ============================== */}
@@ -27,7 +28,7 @@ export default function Home() {
                 style={{ animationDelay: "0.05s" }}
               >
                 <span className="h-1.5 w-1.5 rounded-full bg-ember animate-blink-rec" />
-                Founding access — 50% off for life
+                Founding cohort — first 100 only · 50% off for life
               </span>
 
               <h1
@@ -56,10 +57,7 @@ export default function Home() {
                 className="reveal mt-8 flex flex-col gap-3 sm:flex-row sm:items-center"
                 style={{ animationDelay: "0.28s" }}
               >
-                <a
-                  href={STRIPE_LINK}
-                  className="group inline-flex items-center justify-center gap-2 rounded-full bg-ember px-7 py-4 text-base font-semibold text-ink-900 shadow-glow transition-transform hover:-translate-y-0.5 hover:bg-ember-300"
-                >
+                <CheckoutButton className="group inline-flex items-center justify-center gap-2 rounded-full bg-ember px-7 py-4 text-base font-semibold text-ink-900 shadow-glow transition-transform hover:-translate-y-0.5 hover:bg-ember-300">
                   Lock founding access — $7
                   <svg
                     width="18"
@@ -76,13 +74,13 @@ export default function Home() {
                       strokeLinejoin="round"
                     />
                   </svg>
-                </a>
-                <a
-                  href="#see"
+                </CheckoutButton>
+                <Link
+                  href="/try"
                   className="inline-flex items-center justify-center gap-2 rounded-full border border-white/15 bg-white/[0.03] px-7 py-4 text-base font-medium text-bone transition-colors hover:border-white/30 hover:bg-white/[0.06]"
                 >
-                  <span aria-hidden>▶</span> See it work
-                </a>
+                  <span aria-hidden>▶</span> Try it live — free
+                </Link>
               </div>
 
               <p
@@ -333,6 +331,9 @@ export default function Home() {
                   <p className="mt-1.5 text-sm text-ember-300">
                     That rate never goes up. Ever.
                   </p>
+                  <p className="mt-2 inline-flex items-center gap-1.5 text-xs text-muted">
+                    🐾 Only the first <span className="font-semibold text-bone">100</span> founding members lock this rate.
+                  </p>
 
                   <ul className="mt-7 space-y-3 text-[15px] text-bone/90">
                     {[
@@ -359,12 +360,9 @@ export default function Home() {
                     ))}
                   </ul>
 
-                  <a
-                    href={STRIPE_LINK}
-                    className="mt-8 flex w-full items-center justify-center gap-2 rounded-2xl bg-ember px-6 py-4 text-base font-semibold text-ink-900 shadow-[0_14px_36px_-12px_rgba(255,107,53,0.9)] transition-transform hover:-translate-y-0.5 hover:bg-ember-300"
-                  >
+                  <CheckoutButton className="mt-8 flex w-full items-center justify-center gap-2 rounded-2xl bg-ember px-6 py-4 text-base font-semibold text-ink-900 shadow-[0_14px_36px_-12px_rgba(255,107,53,0.9)] transition-transform hover:-translate-y-0.5 hover:bg-ember-300">
                     Lock founding access — $7
-                  </a>
+                  </CheckoutButton>
                   <p className="mt-3 text-center text-xs text-muted">
                     $7 refundable deposit · fully refunded if you’re not in.
                   </p>
@@ -375,7 +373,7 @@ export default function Home() {
         </section>
 
         {/* ========================= WAITLIST CAPTURE ===================== */}
-        <section className="mx-auto max-w-6xl px-5 pb-20 sm:px-8 lg:pb-28">
+        <section id="waitlist" className="mx-auto max-w-6xl scroll-mt-24 px-5 pb-20 sm:px-8 lg:pb-28">
           <div className="relative overflow-hidden rounded-[2rem] border border-white/10 bg-gradient-to-br from-ember/15 via-ink-800 to-ink-900 px-6 py-12 sm:px-12 lg:py-16">
             <div className="pointer-events-none absolute -left-20 bottom-0 h-64 w-64 rounded-full bg-ember/20 blur-[90px]" />
             <div className="relative mx-auto max-w-xl text-center">
@@ -418,12 +416,9 @@ export default function Home() {
               Lock your founding rate before public launch. $7, refundable, gone
               in two clicks.
             </p>
-            <a
-              href={STRIPE_LINK}
-              className="mt-8 inline-flex items-center justify-center gap-2 rounded-full bg-ember px-8 py-4 text-base font-semibold text-ink-900 shadow-glow transition-transform hover:-translate-y-0.5 hover:bg-ember-300"
-            >
+            <CheckoutButton className="mt-8 inline-flex items-center justify-center gap-2 rounded-full bg-ember px-8 py-4 text-base font-semibold text-ink-900 shadow-glow transition-transform hover:-translate-y-0.5 hover:bg-ember-300">
               Lock founding access — $7
-            </a>
+            </CheckoutButton>
           </div>
         </section>
       </main>

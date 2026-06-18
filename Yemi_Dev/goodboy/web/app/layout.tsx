@@ -26,10 +26,10 @@ const mono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  metadataBase: new URL("https://goodboy.vercel.app"),
+  metadataBase: new URL("https://goodboy-alpha.vercel.app"),
   title: "GoodBoy — Train your dog at home. The AI checks its work.",
   description:
-    "GoodBoy is an AI dog-trick trainer. Point your camera, it calls a command, and a state-of-the-art vision model (RF-DETR) verifies your dog actually did it. Founding access for $7.",
+    "Free in-browser AI dog trainer: point your camera, it calls SIT, and a state-of-the-art vision model verifies your dog actually did it — 95% accuracy. Try it free, no signup. Founding access $6/mo for life.",
   keywords: [
     "dog training app",
     "AI dog trainer",
@@ -37,18 +37,39 @@ export const metadata: Metadata = {
     "RF-DETR",
     "train dog at home",
   ],
+  alternates: { canonical: "/" },
   openGraph: {
-    title: "GoodBoy — Train your dog at home. The AI checks its work.",
+    title: "GoodBoy — The AI that checks your dog's homework",
     description:
-      "An AI clicker-trainer that watches your dog and verifies the trick. Lock founding access for $7.",
+      "Point your camera. GoodBoy calls SIT and verifies your dog actually did it. Try it free in your browser — no signup.",
     type: "website",
     siteName: "GoodBoy",
+    url: "https://goodboy-alpha.vercel.app",
+    images: [{ url: "/og.png", width: 1200, height: 630, alt: "GoodBoy — AI dog trainer" }],
   },
   twitter: {
     card: "summary_large_image",
     title: "GoodBoy — The AI that checks your dog's homework",
     description:
-      "Point your camera. GoodBoy calls SIT and verifies your dog actually did it. Founding access $7.",
+      "Point your camera. GoodBoy calls SIT and verifies your dog actually did it. Try it free in your browser.",
+    images: ["/og.png"],
+  },
+};
+
+const PRODUCT_LD = {
+  "@context": "https://schema.org",
+  "@type": "Product",
+  name: "GoodBoy — AI Dog-Trick Trainer",
+  description:
+    "An AI clicker-trainer that watches your dog through the camera and verifies sit, down, and stand in real time.",
+  brand: { "@type": "Brand", name: "GoodBoy" },
+  offers: {
+    "@type": "Offer",
+    price: "6.00",
+    priceCurrency: "USD",
+    description: "Founding member — $6/mo for life (50% off), $7 refundable deposit.",
+    availability: "https://schema.org/PreOrder",
+    url: "https://goodboy-alpha.vercel.app/#pricing",
   },
 };
 
@@ -69,6 +90,10 @@ export default function RootLayout({
       className={`${display.variable} ${sans.variable} ${mono.variable}`}
     >
       <body className="font-sans antialiased bg-ink text-bone">
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{ __html: JSON.stringify(PRODUCT_LD) }}
+        />
         {children}
         <Analytics />
       </body>

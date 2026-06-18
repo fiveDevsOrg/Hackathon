@@ -15,11 +15,14 @@ export default function WaitlistForm() {
     setStatus("loading");
     setMessage("");
 
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 12000);
     try {
       const res = await fetch("/api/waitlist", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email }),
+        body: JSON.stringify({ email, source: "waitlist" }),
+        signal: controller.signal,
       });
       const data = (await res.json()) as { ok: boolean; error?: string };
 
@@ -32,6 +35,8 @@ export default function WaitlistForm() {
     } catch {
       setStatus("error");
       setMessage("Network hiccup — please try again.");
+    } finally {
+      clearTimeout(timer);
     }
   }
 

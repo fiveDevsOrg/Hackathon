@@ -1,13 +1,15 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import CheckoutButton from "./CheckoutButton";
 
 const LINKS = [
-  { href: "#how", label: "How it works" },
-  { href: "#pricing", label: "Pricing" },
+  { href: "/#how", label: "How it works" },
+  { href: "/try", label: "Try free" },
+  { href: "/#pricing", label: "Pricing" },
 ];
 
-export default function Nav({ ctaHref }: { ctaHref: string }) {
+export default function Nav() {
   const [scrolled, setScrolled] = useState(false);
   const [open, setOpen] = useState(false);
 
@@ -27,20 +29,16 @@ export default function Nav({ ctaHref }: { ctaHref: string }) {
       }`}
     >
       <nav className="mx-auto flex max-w-6xl items-center justify-between px-5 py-3.5 sm:px-8">
-        {/* Wordmark */}
         <a
           href="#top"
           className="group flex items-center gap-2 font-display text-lg font-semibold tracking-tight"
         >
-          <span className="text-xl transition-transform group-hover:-rotate-12">
-            🐕
-          </span>
+          <span className="text-xl transition-transform group-hover:-rotate-12">🐕</span>
           <span>
             Good<span className="text-gradient-ember">Boy</span>
           </span>
         </a>
 
-        {/* Desktop links */}
         <div className="hidden items-center gap-8 md:flex">
           {LINKS.map((l) => (
             <a
@@ -51,15 +49,11 @@ export default function Nav({ ctaHref }: { ctaHref: string }) {
               {l.label}
             </a>
           ))}
-          <a
-            href={ctaHref}
-            className="rounded-full bg-ember px-4 py-2 text-sm font-semibold text-ink-900 shadow-[0_8px_24px_-8px_rgba(255,107,53,0.7)] transition-transform hover:-translate-y-0.5 hover:bg-ember-300"
-          >
+          <CheckoutButton className="rounded-full bg-ember px-4 py-2 text-sm font-semibold text-ink-900 shadow-[0_8px_24px_-8px_rgba(255,107,53,0.7)] transition-transform hover:-translate-y-0.5 hover:bg-ember-300">
             Get founding access
-          </a>
+          </CheckoutButton>
         </div>
 
-        {/* Mobile toggle */}
         <button
           type="button"
           aria-label="Toggle menu"
@@ -68,26 +62,13 @@ export default function Nav({ ctaHref }: { ctaHref: string }) {
           className="grid h-10 w-10 place-items-center rounded-full border border-white/10 bg-ink-800/60 md:hidden"
         >
           <div className="space-y-1.5">
-            <span
-              className={`block h-0.5 w-5 bg-bone transition-transform ${
-                open ? "translate-y-2 rotate-45" : ""
-              }`}
-            />
-            <span
-              className={`block h-0.5 w-5 bg-bone transition-opacity ${
-                open ? "opacity-0" : ""
-              }`}
-            />
-            <span
-              className={`block h-0.5 w-5 bg-bone transition-transform ${
-                open ? "-translate-y-2 -rotate-45" : ""
-              }`}
-            />
+            <span className={`block h-0.5 w-5 bg-bone transition-transform ${open ? "translate-y-2 rotate-45" : ""}`} />
+            <span className={`block h-0.5 w-5 bg-bone transition-opacity ${open ? "opacity-0" : ""}`} />
+            <span className={`block h-0.5 w-5 bg-bone transition-transform ${open ? "-translate-y-2 -rotate-45" : ""}`} />
           </div>
         </button>
       </nav>
 
-      {/* Mobile drawer */}
       <div
         className={`overflow-hidden border-t border-white/10 bg-ink-900/95 backdrop-blur-xl transition-[max-height,opacity] duration-300 md:hidden ${
           open ? "max-h-72 opacity-100" : "max-h-0 opacity-0"
@@ -104,13 +85,9 @@ export default function Nav({ ctaHref }: { ctaHref: string }) {
               {l.label}
             </a>
           ))}
-          <a
-            href={ctaHref}
-            onClick={() => setOpen(false)}
-            className="mt-1 rounded-xl bg-ember px-3 py-3 text-center text-base font-semibold text-ink-900"
-          >
+          <CheckoutButton className="mt-1 w-full rounded-xl bg-ember px-3 py-3 text-center text-base font-semibold text-ink-900">
             Get founding access — $7
-          </a>
+          </CheckoutButton>
         </div>
       </div>
     </header>
