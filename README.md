@@ -16,11 +16,13 @@ A working demo is the floor. The winner is whoever gets closest to **real dollar
 
 ## How we work
 
-- **This repo (`Hackathon`)** = shared rules + your personal notes. Work on your own
-  branch — `Polo_Dev`, `Yemi_Dev`, etc. — for your plan, standups, and idea claim. PR to
-  `main` only for shared changes.
-- **Your `mvp-<name>` repo** = where you actually build, deploy, and charge. Your stack,
-  your Vercel project, your money mechanism. Branch freely *inside* it for previews.
+Everything lives under one banner — this **Hackathon** repo.
+
+- **`main` = the banner.** Shared rules + hackathon landing. Rarely touched.
+- **Your branch = your workstation.** `Polo_Dev`, `Yemi_Dev`, etc. Build your whole MVP here.
+- **Deploy your own branch.** Connect your *own* Vercel / Azure / etc. to your branch and set
+  it as the **production branch** (ignore the others). Keep deploy secrets in your own
+  platform, **not** in this repo — repo secrets are shared across all collaborators.
 
 ## The scoreboard (live on the [org page](https://github.com/fiveDevsOrg))
 
@@ -31,13 +33,16 @@ A working demo is the floor. The winner is whoever gets closest to **real dollar
 | 2 | Pre-orders / LOIs | 🥈 |
 | 3 | **Real money collected** | 🥇 |
 
-## Repos
+## Workstations (branches)
 
-| Repo | Owner |
-|------|-------|
-| [`Hackathon`](https://github.com/fiveDevsOrg/Hackathon) | shared (this repo) |
-| `mvp-yemi` | @yemi-bot |
-| `mvp-poloxbt` … `mvp-dev5` | one per builder |
+| Branch | Builder |
+|--------|---------|
+| `main` | shared banner |
+| `Polo_Dev` | @PoloXBT |
+| `Yemi_Dev` | @yemi-bot |
+| _one per builder_ | … |
+
+Each builder deploys their own branch from their own account.
 
 ## The mantra
 
