@@ -41,6 +41,14 @@ cameraButton.addEventListener("click", async () => {
     statusText.textContent = "Looking for head and shoulders";
     renderLoop();
   } catch (error) {
+    if (stream) {
+      stream.getTracks().forEach((track) => track.stop());
+      stream = null;
+      video.srcObject = null;
+    }
+
+    detector = null;
+    detectorMode.textContent = "Standby";
     statusText.textContent = cameraErrorMessage(error);
   } finally {
     cameraButton.disabled = false;

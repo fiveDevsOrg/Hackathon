@@ -1,6 +1,11 @@
 {
   "navigationFallback": {
-    "rewrite": "/index.html"
+    "rewrite": "/index.html",
+    "exclude": [
+      "/models/*",
+      "/src/*",
+      "/*.{css,js,json,onnx,wasm}"
+    ]
   },
   "mimeTypes": {
     ".onnx": "application/octet-stream"

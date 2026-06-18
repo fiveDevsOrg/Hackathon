@@ -20,7 +20,17 @@ async function tryCreateRfDetrDetector() {
     return null;
   }
 
-  const modelConfig = await manifest.json();
+  const contentType = manifest.headers.get("content-type") || "";
+
+  if (!contentType.includes("application/json")) {
+    return null;
+  }
+
+  const modelConfig = await manifest.json().catch(() => null);
+
+  if (!modelConfig) {
+    return null;
+  }
 
   return {
     label: "RF-DETR ready",
@@ -36,7 +46,6 @@ function createFaceDetector(fallbackDetector) {
     fastMode: true,
     maxDetectedFaces: 4
   });
-  let missedFrames = 0;
 
   return {
     label: "FaceDetector + guide",
@@ -45,16 +54,8 @@ function createFaceDetector(fallbackDetector) {
       const scale = getObjectFitScale(video, canvas);
 
       if (!faces.length) {
-        missedFrames += 1;
-
-        if (missedFrames >= 8) {
-          return fallbackDetector.detect(video, canvas);
-        }
-
-        return [];
+        return fallbackDetector.detect(video, canvas);
       }
-
-      missedFrames = 0;
 
       return faces.map((face) => {
         const faceBox = scaleBox(face.boundingBox, scale);
