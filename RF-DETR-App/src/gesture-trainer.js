@@ -4,6 +4,11 @@ const PINCH_START_DISTANCE = 48;
 const PINCH_RELEASE_DISTANCE = 82;
 const PINCH_GRACE_MS = 260;
 const ZOOM_MIN_DELTA = 4.5;
+const SWIPE_MIN_DISTANCE_RATIO = 0.34;
+const SWIPE_MIN_DISTANCE = 230;
+const SWIPE_MAX_VERTICAL_RATIO = 0.28;
+const SWIPE_MIN_SPEED = 1.25;
+const SWIPE_MAX_DURATION_MS = 420;
 
 const gestureLabels = {
   "pinch-click": "Pinch click",
@@ -244,7 +249,7 @@ class GestureWorkspace {
       ? detectSwipe(primary, this.trails.get(primary.handedness), this.canvas.width)
       : null;
 
-    if (swipe && now - this.lastSwipeAt > 650) {
+    if (swipe && now - this.lastSwipeAt > 950) {
       this.selectedIndex = wrapIndex(this.selectedIndex + (swipe === "right" ? 1 : -1), this.sandbox.length);
       this.lastSwipeAt = now;
       this.lastAction = swipe === "right" ? "Swipe right" : "Swipe left";
@@ -256,16 +261,16 @@ class GestureWorkspace {
     const seen = new Set();
 
     for (const hand of hands) {
-      const indexTip = getPoint(hand, 8);
+      const wrist = getPoint(hand, 0);
 
-      if (!indexTip) {
+      if (!wrist) {
         continue;
       }
 
       const id = hand.handedness;
       seen.add(id);
       const trail = this.trails.get(id) || [];
-      trail.unshift({ x: this.canvas.width - indexTip.x, y: indexTip.y, t: performance.now() });
+      trail.unshift({ x: this.canvas.width - wrist.x, y: wrist.y, t: performance.now() });
       this.trails.set(id, trail.slice(0, TRAIL_LIMIT));
     }
 
@@ -474,18 +479,44 @@ function anyHandPinching(hands, canvasWidth) {
 }
 
 function detectSwipe(hand, trail, canvasWidth) {
-  if (!isOpenHand(hand, canvasWidth) || !trail || trail.length < 8) return null;
+  if (!isOpenHand(hand, canvasWidth) || !trail || trail.length < 10) return null;
 
   const newest = trail[0];
-  const oldest = trail[Math.min(trail.length - 1, 10)];
+  const oldest = trail[Math.min(trail.length - 1, 12)];
   const dx = newest.x - oldest.x;
   const dy = Math.abs(newest.y - oldest.y);
   const dt = Math.max(1, newest.t - oldest.t);
   const speed = Math.abs(dx) / dt;
+  const minDistance = Math.max(SWIPE_MIN_DISTANCE, canvasWidth * SWIPE_MIN_DISTANCE_RATIO);
+  const horizontalEnough = Math.abs(dx) >= minDistance && dy <= Math.abs(dx) * SWIPE_MAX_VERTICAL_RATIO;
+  const decisive = dt <= SWIPE_MAX_DURATION_MS && speed >= SWIPE_MIN_SPEED && hasConsistentSwipeDirection(trail, dx);
 
-  if (Math.abs(dx) < 170 || dy > 70 || speed < 0.85) return null;
+  if (!horizontalEnough || !decisive) return null;
 
   return dx > 0 ? "right" : "left";
+}
+
+function hasConsistentSwipeDirection(trail, dx) {
+  const direction = Math.sign(dx);
+  let matchingSteps = 0;
+  let measuredSteps = 0;
+  const limit = Math.min(trail.length - 1, 12);
+
+  for (let index = 0; index < limit; index += 1) {
+    const stepDx = trail[index].x - trail[index + 1].x;
+
+    if (Math.abs(stepDx) < 7) {
+      continue;
+    }
+
+    measuredSteps += 1;
+
+    if (Math.sign(stepDx) === direction) {
+      matchingSteps += 1;
+    }
+  }
+
+  return measuredSteps >= 5 && matchingSteps / measuredSteps >= 0.72;
 }
 
 function isOpenHand(hand, canvasWidth) {
