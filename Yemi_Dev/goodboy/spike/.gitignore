@@ -1,0 +1,12 @@
+# Spike scratch — don't commit heavyweight/local artifacts
+.venv/
+__pycache__/
+*.pth
+*.pt
+*.onnx
+*.engine
+output/
+*.jpg
+*.jpeg
+*.png
+!sample_expected.png
