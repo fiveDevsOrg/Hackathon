@@ -1,18 +1,21 @@
+import { createArenaScene } from "./three-scene.js?v=slash-rush-3d-1";
+
 const ROUND_SECONDS = 60;
-const TARGET_RADIUS = 24;
-const HAZARD_RADIUS = 28;
+const FAR_Z = -34;
+const NEAR_Z = 4.5;
 const WRIST_RADIUS = 20;
 const MAX_TRAIL_POINTS = 10;
-const SPAWN_INTERVAL_MS = 760;
+const SPAWN_INTERVAL_MS = 820;
 
-export function createSlashGame(canvas, ctx) {
-  return new SlashGame(canvas, ctx);
+export function createSlashGame(canvas, ctx, sceneHost) {
+  return new SlashGame(canvas, ctx, sceneHost);
 }
 
 class SlashGame {
-  constructor(canvas, ctx) {
+  constructor(canvas, ctx, sceneHost) {
     this.canvas = canvas;
     this.ctx = ctx;
+    this.arena = createArenaScene(sceneHost);
     this.targets = [];
     this.effects = [];
     this.trails = new Map();
@@ -22,10 +25,11 @@ class SlashGame {
     this.lastSpawn = 0;
     this.lastFrame = 0;
     this.running = false;
+    this.arena.render();
   }
 
   start(now = performance.now()) {
-    this.targets = [];
+    this.clearTargets();
     this.effects = [];
     this.trails = new Map();
     this.score = 0;
@@ -38,7 +42,7 @@ class SlashGame {
 
   stop() {
     this.running = false;
-    this.targets = [];
+    this.clearTargets();
     this.effects = [];
     this.trails = new Map();
   }
@@ -72,13 +76,13 @@ class SlashGame {
     this.checkHits(wrists);
     this.pruneTargets();
     this.updateEffects(delta);
+    this.updateProjectedTargets();
 
     return this.snapshot();
   }
 
   draw(detections) {
-    this.drawArena();
-    this.drawTargets();
+    this.arena.render();
     this.drawTrails();
     this.drawWristCursors(detections);
     this.drawEffects();
@@ -108,42 +112,49 @@ class SlashGame {
 
   spawnTarget() {
     const edge = Math.floor(Math.random() * 4);
-    const margin = 60;
-    const center = { x: this.canvas.width / 2, y: this.canvas.height / 2 };
     const target = {
       id: crypto.randomUUID(),
       type: Math.random() < 0.18 ? "hazard" : "target",
-      x: 0,
-      y: 0,
-      radius: TARGET_RADIUS,
-      speed: 0.12 + Math.random() * 0.11,
-      rotation: Math.random() * Math.PI,
-      spin: (Math.random() - 0.5) * 0.008
+      worldX: 0,
+      worldY: 0,
+      z: FAR_Z,
+      worldRadius: 0.42,
+      zSpeed: 0.0052 + Math.random() * 0.0022,
+      driftX: (Math.random() - 0.5) * 0.00045,
+      driftY: (Math.random() - 0.5) * 0.00035,
+      spinX: (Math.random() - 0.5) * 0.026,
+      spinY: (Math.random() - 0.5) * 0.026,
+      spinZ: (Math.random() - 0.5) * 0.026,
+      seed: Math.random() * Math.PI * 2,
+      projected: null
     };
 
     if (target.type === "hazard") {
-      target.radius = HAZARD_RADIUS;
-      target.speed *= 0.82;
+      target.worldRadius = 0.5;
+      target.zSpeed *= 0.88;
     }
+
+    const spreadX = 4.2;
+    const spreadY = 2.4;
 
     if (edge === 0) {
-      target.x = Math.random() * this.canvas.width;
-      target.y = -margin;
+      target.worldX = (Math.random() - 0.5) * spreadX;
+      target.worldY = spreadY;
     } else if (edge === 1) {
-      target.x = this.canvas.width + margin;
-      target.y = Math.random() * this.canvas.height;
+      target.worldX = spreadX;
+      target.worldY = (Math.random() - 0.5) * spreadY;
     } else if (edge === 2) {
-      target.x = Math.random() * this.canvas.width;
-      target.y = this.canvas.height + margin;
+      target.worldX = (Math.random() - 0.5) * spreadX;
+      target.worldY = -spreadY;
     } else {
-      target.x = -margin;
-      target.y = Math.random() * this.canvas.height;
+      target.worldX = -spreadX;
+      target.worldY = (Math.random() - 0.5) * spreadY;
     }
 
-    const angle = Math.atan2(center.y - target.y, center.x - target.x) + (Math.random() - 0.5) * 0.8;
-    target.vx = Math.cos(angle) * target.speed;
-    target.vy = Math.sin(angle) * target.speed;
+    target.driftX += -target.worldX * 0.00008;
+    target.driftY += -target.worldY * 0.00008;
     this.targets.push(target);
+    this.arena.addTarget(target);
   }
 
   extractWrists(detections) {
@@ -187,9 +198,10 @@ class SlashGame {
 
   moveTargets(delta) {
     for (const target of this.targets) {
-      target.x += target.vx * delta;
-      target.y += target.vy * delta;
-      target.rotation += target.spin * delta;
+      target.z += target.zSpeed * delta;
+      target.worldX += target.driftX * delta;
+      target.worldY += target.driftY * delta;
+      this.arena.updateTarget(target);
     }
   }
 
@@ -202,7 +214,11 @@ class SlashGame {
           continue;
         }
 
-        if (trail.some((point) => distance(point, target) <= target.radius + WRIST_RADIUS)) {
+        if (!target.projected) {
+          continue;
+        }
+
+        if (trail.some((point) => distance(point, target.projected) <= target.projected.radius + WRIST_RADIUS)) {
           target.hit = true;
           this.registerHit(target);
         }
@@ -214,34 +230,41 @@ class SlashGame {
     if (target.type === "hazard") {
       this.score = Math.max(0, this.score - 75);
       this.streak = 0;
-      this.effects.push(createEffect(target.x, target.y, "#ff5a6a", "-75"));
+      this.effects.push(createEffect(target.projected.x, target.projected.y, "#ff5a6a", "-75"));
       return;
     }
 
     this.streak += 1;
     const points = 100 + Math.min(250, this.streak * 10);
     this.score += points;
-    this.effects.push(createEffect(target.x, target.y, "#35d07f", `+${points}`));
+    this.effects.push(createEffect(target.projected.x, target.projected.y, "#35d07f", `+${points}`));
   }
 
   pruneTargets() {
-    const buffer = 120;
     this.targets = this.targets.filter((target) => {
       if (target.hit) {
+        this.arena.removeTarget(target);
         return false;
       }
 
-      const offscreen = target.x < -buffer ||
-        target.x > this.canvas.width + buffer ||
-        target.y < -buffer ||
-        target.y > this.canvas.height + buffer;
+      const missed = target.z >= NEAR_Z;
 
-      if (offscreen && target.type === "target") {
+      if (missed && target.type === "target") {
         this.streak = 0;
       }
 
-      return !offscreen;
+      if (missed) {
+        this.arena.removeTarget(target);
+      }
+
+      return !missed;
     });
+  }
+
+  updateProjectedTargets() {
+    for (const target of this.targets) {
+      target.projected = this.arena.projectTarget(target);
+    }
   }
 
   updateEffects(delta) {
@@ -322,22 +345,6 @@ class SlashGame {
     }
   }
 
-  drawTargets() {
-    for (const target of this.targets) {
-      this.ctx.save();
-      this.ctx.translate(target.x, target.y);
-      this.ctx.rotate(target.rotation);
-
-      if (target.type === "hazard") {
-        drawHazard(this.ctx, target.radius);
-      } else {
-        drawTarget(this.ctx, target.radius);
-      }
-
-      this.ctx.restore();
-    }
-  }
-
   drawTrails() {
     for (const [id, trail] of this.trails.entries()) {
       if (trail.length < 2) {
@@ -388,46 +395,14 @@ class SlashGame {
     this.ctx.fillText("Slash green targets with either hand. Avoid red hazards.", this.canvas.width / 2, this.canvas.height / 2 + 16);
     this.ctx.restore();
   }
-}
 
-function drawTarget(ctx, radius) {
-  ctx.fillStyle = "rgba(53, 208, 127, 0.2)";
-  ctx.strokeStyle = "#35d07f";
-  ctx.lineWidth = 4;
-  ctx.beginPath();
-  ctx.arc(0, 0, radius, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.moveTo(-radius * 0.62, 0);
-  ctx.lineTo(radius * 0.62, 0);
-  ctx.moveTo(0, -radius * 0.62);
-  ctx.lineTo(0, radius * 0.62);
-  ctx.stroke();
-}
-
-function drawHazard(ctx, radius) {
-  ctx.fillStyle = "rgba(255, 90, 106, 0.22)";
-  ctx.strokeStyle = "#ff5a6a";
-  ctx.lineWidth = 4;
-  ctx.beginPath();
-
-  for (let index = 0; index < 8; index += 1) {
-    const angle = (Math.PI * 2 * index) / 8;
-    const pointRadius = index % 2 === 0 ? radius : radius * 0.58;
-    const x = Math.cos(angle) * pointRadius;
-    const y = Math.sin(angle) * pointRadius;
-
-    if (index === 0) {
-      ctx.moveTo(x, y);
-    } else {
-      ctx.lineTo(x, y);
+  clearTargets() {
+    for (const target of this.targets) {
+      this.arena.removeTarget(target);
     }
-  }
 
-  ctx.closePath();
-  ctx.fill();
-  ctx.stroke();
+    this.targets = [];
+  }
 }
 
 function createEffect(x, y, color, label) {

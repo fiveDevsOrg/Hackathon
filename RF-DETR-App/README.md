@@ -31,16 +31,19 @@ npx --yes @azure/static-web-apps-cli deploy /home/christopher/Hackathon/RF-DETR-
 - Hides the camera image from the player while still using it for pose input.
 - Loads MediaPipe Pose Landmarker in the browser.
 - Uses wrist landmarks `15` and `16` as slash blades.
-- Spawns green targets and red hazards.
+- Renders a full-bleed Three.js arena.
+- Spawns green target meshes and red hazard meshes in 3D space.
+- Moves objects along the Z axis toward the player.
 - Scores successful slashes, tracks streaks, and runs a 60-second round.
-- Renders an abstract game arena, wrist cursors, slash trails, targets, hazards, and hit effects.
+- Renders wrist cursors, slash trails, and hit effects on the transparent 2D overlay.
 - Falls back to face detection if Pose Landmarker cannot load, but game controls require pose landmarks.
 
 ## Code Structure
 
 - `src/app.js`: camera lifecycle, detector loop, and UI metrics.
 - `src/detector.js`: RF-DETR placeholder, MediaPipe Pose Landmarker, and face-detection fallbacks.
-- `src/game.js`: target spawning, wrist trails, collision detection, scoring, and canvas rendering.
+- `src/game.js`: 3D target spawning, wrist trails, projected collision detection, scoring, and overlay rendering.
+- `src/three-scene.js`: Three.js camera, renderer, tunnel arena, lighting, and target meshes.
 - `models/`: placeholder for future RF-DETR browser model assets.
 
 ## RF-DETR Integration

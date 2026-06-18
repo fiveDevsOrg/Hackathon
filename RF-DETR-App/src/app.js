@@ -1,7 +1,8 @@
-import { createDetector } from "./detector.js?v=slash-rush-2";
-import { createSlashGame } from "./game.js?v=slash-rush-2";
+import { createDetector } from "./detector.js?v=slash-rush-3d-1";
+import { createSlashGame } from "./game.js?v=slash-rush-3d-1";
 
 const video = document.querySelector("#camera");
+const sceneHost = document.querySelector("#scene3d");
 const canvas = document.querySelector("#overlay");
 const ctx = canvas.getContext("2d");
 const cameraButton = document.querySelector("#cameraButton");
@@ -12,7 +13,7 @@ const timeValue = document.querySelector("#timeValue");
 
 let stream = null;
 let detector = null;
-let game = createSlashGame(canvas, ctx);
+let game = createSlashGame(canvas, ctx, sceneHost);
 let animationFrame = null;
 
 cameraButton.addEventListener("click", async () => {

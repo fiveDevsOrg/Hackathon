@@ -35,6 +35,7 @@ button {
 }
 
 #camera,
+#scene3d,
 #overlay {
   position: absolute;
   inset: 0;
@@ -50,6 +51,17 @@ button {
 
 #overlay {
   pointer-events: none;
+  z-index: 1;
+}
+
+#scene3d {
+  z-index: 0;
+}
+
+#scene3d canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 
 .top-bar {

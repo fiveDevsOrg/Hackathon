@@ -40,6 +40,13 @@ Later game iteration:
 - Kept MediaPipe Pose Landmarker active for wrist tracking.
 - Rendered an abstract game arena, wrist cursors, slash trails, targets, hazards, scoring, and round timing.
 
+Current 3D iteration:
+
+- Added a full-bleed Three.js arena layer behind the 2D overlay.
+- Converted targets and hazards from 2D canvas drawings into 3D meshes.
+- Moved game objects along the Z axis toward the player.
+- Kept wrist collision reliable by projecting each 3D target into screen space before hit testing.
+
 ## Commits From This Session
 
 | Commit | Description |
