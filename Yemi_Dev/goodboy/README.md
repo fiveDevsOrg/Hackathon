@@ -3,7 +3,7 @@
 > **One sentence:** New-puppy owners pay a **$7 deposit** to lock **50%-off-for-life** access to an AI trainer that watches their dog through the phone camera and **verifies it actually did the command** — so they train at home without a $90/session pro.
 
 **Builder:** @yemi-bot
-**Live URL:** https://goodboy.vercel.app _(deploying Day 1)_
+**Live URL:** https://goodboy-alpha.vercel.app _(live on Vercel)_
 **Stack:** Next.js + Stripe Payment Link + Vercel Analytics (revenue track) · Python + RF-DETR-Small + supervision (product/demo track)
 
 ---
