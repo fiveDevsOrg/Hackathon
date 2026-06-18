@@ -98,6 +98,16 @@ Near-term recommendation:
 - Record attempts and scores to create a dataset.
 - Use the game format to make gesture practice and data collection natural.
 
+Implemented trainer MVP:
+
+- Added a mode toggle between `Slash Game` and `Gesture Trainer`.
+- Added MediaPipe Hand Landmarker for detailed hand keypoints.
+- Added prompts for `Pinch click`, `Swipe right`, and `Zoom out`.
+- Added short attempt windows that capture hand landmark sequences.
+- Added rule-based scoring for the first gesture set.
+- Added session sample counts for captured gesture attempts.
+- Kept the camera hidden while rendering fingertip hints and motion trails.
+
 ## Commits From This Session
 
 | Commit | Description |
@@ -115,6 +125,7 @@ Near-term recommendation:
 | `1b7b9b6` | Load Slash Rush app module |
 | `a457e27` | Hide camera and skeleton during gameplay |
 | `5403ab4` | Render Slash Rush targets in Three.js |
+| `db5dbb1` | Document gesture control training direction |
 
 ## Security Note
 

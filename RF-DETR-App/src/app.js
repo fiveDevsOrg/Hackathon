@@ -1,24 +1,37 @@
-import { createDetector } from "./detector.js?v=slash-rush-3d-1";
-import { createSlashGame } from "./game.js?v=slash-rush-3d-1";
+import { createDetector } from "./detector.js?v=gesture-trainer-1";
+import { createSlashGame } from "./game.js?v=gesture-trainer-1";
+import { createGestureTrainer } from "./gesture-trainer.js?v=gesture-trainer-1";
+import { createHandTracker } from "./hand-tracker.js?v=gesture-trainer-1";
 
 const video = document.querySelector("#camera");
 const sceneHost = document.querySelector("#scene3d");
 const canvas = document.querySelector("#overlay");
 const ctx = canvas.getContext("2d");
 const cameraButton = document.querySelector("#cameraButton");
+const gameModeButton = document.querySelector("#gameModeButton");
+const trainerModeButton = document.querySelector("#trainerModeButton");
 const statusText = document.querySelector("#statusText");
+const metricOneLabel = document.querySelector("#metricOneLabel");
+const metricTwoLabel = document.querySelector("#metricTwoLabel");
+const metricThreeLabel = document.querySelector("#metricThreeLabel");
 const scoreValue = document.querySelector("#scoreValue");
 const streakValue = document.querySelector("#streakValue");
 const timeValue = document.querySelector("#timeValue");
 
 let stream = null;
 let detector = null;
+let handTracker = null;
 let game = createSlashGame(canvas, ctx, sceneHost);
+let trainer = createGestureTrainer(canvas, ctx);
 let animationFrame = null;
+let mode = "game";
+
+gameModeButton.addEventListener("click", () => setMode("game"));
+trainerModeButton.addEventListener("click", () => setMode("trainer"));
 
 cameraButton.addEventListener("click", async () => {
   if (stream) {
-    if (game.isRoundOver()) {
+    if (mode === "game" && game.isRoundOver()) {
       game.start();
       cameraButton.textContent = "Stop game";
       statusText.textContent = "Slash green targets. Avoid red hazards.";
@@ -45,10 +58,9 @@ cameraButton.addEventListener("click", async () => {
     video.srcObject = stream;
     await video.play();
 
-    detector = await createDetector();
-    game.start();
-    cameraButton.textContent = "Stop game";
-    statusText.textContent = `${detector.label}: slash green targets`;
+    detector = mode === "game" ? await createDetector() : null;
+    handTracker = mode === "trainer" ? await createHandTracker() : null;
+    startActiveMode();
     renderLoop();
   } catch (error) {
     if (stream) {
@@ -58,7 +70,9 @@ cameraButton.addEventListener("click", async () => {
     }
 
     detector = null;
+    handTracker = null;
     game.stop();
+    trainer.stop();
     statusText.textContent = cameraErrorMessage(error);
   } finally {
     cameraButton.disabled = false;
@@ -71,14 +85,14 @@ function stopCamera() {
   stream.getTracks().forEach((track) => track.stop());
   stream = null;
   detector = null;
+  handTracker = null;
   game.stop();
+  trainer.stop();
   video.srcObject = null;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  scoreValue.textContent = "0";
-  streakValue.textContent = "0";
-  timeValue.textContent = "60";
+  resetMetrics();
   statusText.textContent = "Camera idle";
-  cameraButton.innerHTML = '<span class="button-icon" aria-hidden="true">●</span>Start game';
+  cameraButton.innerHTML = `<span class="button-icon" aria-hidden="true">●</span>${mode === "game" ? "Start game" : "Start trainer"}`;
 }
 
 async function renderLoop() {
@@ -86,10 +100,18 @@ async function renderLoop() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
   try {
-    const detections = await detector.detect(video, canvas);
-    const gameState = game.update(detections);
-    game.draw(detections);
-    updateMetrics(gameState, detections);
+    if (mode === "trainer") {
+      const hands = handTracker.detect(video, canvas);
+      const trainerState = trainer.update(hands);
+      game.arena.render();
+      trainer.draw(hands);
+      updateTrainerMetrics(trainerState, hands);
+    } else {
+      const detections = await detector.detect(video, canvas);
+      const gameState = game.update(detections);
+      game.draw(detections);
+      updateGameMetrics(gameState, detections);
+    }
   } catch (error) {
     console.error("Detector failed", error);
     statusText.textContent = "Detector error";
@@ -109,7 +131,61 @@ function resizeCanvas() {
   }
 }
 
-function updateMetrics(gameState, detections) {
+function setMode(nextMode) {
+  if (stream) {
+    statusText.textContent = "Stop the current session before changing modes";
+    return;
+  }
+
+  mode = nextMode;
+  gameModeButton.classList.toggle("active", mode === "game");
+  trainerModeButton.classList.toggle("active", mode === "trainer");
+  resetMetrics();
+  statusText.textContent = mode === "game" ? "Camera idle" : "Gesture trainer ready";
+  cameraButton.innerHTML = `<span class="button-icon" aria-hidden="true">●</span>${mode === "game" ? "Start game" : "Start trainer"}`;
+}
+
+function startActiveMode() {
+  if (mode === "trainer") {
+    game.stop();
+    trainer.start();
+    cameraButton.textContent = "Stop trainer";
+    statusText.textContent = `${handTracker.label}: follow the gesture prompt`;
+    metricOneLabel.textContent = "Gesture";
+    metricTwoLabel.textContent = "Score";
+    metricThreeLabel.textContent = "Samples";
+    return;
+  }
+
+  trainer.stop();
+  game.start();
+  cameraButton.textContent = "Stop game";
+  statusText.textContent = `${detector.label}: slash green targets`;
+  metricOneLabel.textContent = "Score";
+  metricTwoLabel.textContent = "Streak";
+  metricThreeLabel.textContent = "Time";
+}
+
+function resetMetrics() {
+  if (mode === "trainer") {
+    metricOneLabel.textContent = "Gesture";
+    metricTwoLabel.textContent = "Score";
+    metricThreeLabel.textContent = "Samples";
+    scoreValue.textContent = "-";
+    streakValue.textContent = "0%";
+    timeValue.textContent = "0";
+    return;
+  }
+
+  metricOneLabel.textContent = "Score";
+  metricTwoLabel.textContent = "Streak";
+  metricThreeLabel.textContent = "Time";
+  scoreValue.textContent = "0";
+  streakValue.textContent = "0";
+  timeValue.textContent = "60";
+}
+
+function updateGameMetrics(gameState, detections) {
   scoreValue.textContent = String(gameState.score);
   streakValue.textContent = String(gameState.streak);
   timeValue.textContent = String(gameState.time);
@@ -121,6 +197,13 @@ function updateMetrics(gameState, detections) {
   }
 
   statusText.textContent = detections.length ? "Slash green targets. Avoid red hazards." : "Step into camera view";
+}
+
+function updateTrainerMetrics(trainerState, hands) {
+  scoreValue.textContent = trainerState.prompt.title;
+  streakValue.textContent = `${trainerState.score}%`;
+  timeValue.textContent = String(trainerState.attempts);
+  statusText.textContent = hands.length ? trainerState.result : "Show one or two hands to the camera";
 }
 
 function cameraErrorMessage(error) {

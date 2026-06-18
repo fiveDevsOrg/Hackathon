@@ -17,28 +17,34 @@
             <h1>Slash Rush</h1>
             <p id="statusText">Camera idle</p>
           </div>
-          <button id="cameraButton" type="button">
-            <span class="button-icon" aria-hidden="true">●</span>
-            Start game
-          </button>
+          <div class="control-stack">
+            <div class="mode-toggle" aria-label="Mode">
+              <button id="gameModeButton" class="mode-button active" type="button">Slash Game</button>
+              <button id="trainerModeButton" class="mode-button" type="button">Gesture Trainer</button>
+            </div>
+            <button id="cameraButton" type="button">
+              <span class="button-icon" aria-hidden="true">●</span>
+              Start game
+            </button>
+          </div>
         </div>
         <div class="metric-strip" aria-live="polite">
           <div>
-            <span class="metric-label">Score</span>
+            <span id="metricOneLabel" class="metric-label">Score</span>
             <strong id="scoreValue">0</strong>
           </div>
           <div>
-            <span class="metric-label">Streak</span>
+            <span id="metricTwoLabel" class="metric-label">Streak</span>
             <strong id="streakValue">0</strong>
           </div>
           <div>
-            <span class="metric-label">Time</span>
+            <span id="metricThreeLabel" class="metric-label">Time</span>
             <strong id="timeValue">60</strong>
           </div>
         </div>
       </section>
     </main>
 
-    <script type="module" src="./src/app.js?v=slash-rush-3d-1"></script>
+    <script type="module" src="./src/app.js?v=gesture-trainer-1"></script>
   </body>
 </html>

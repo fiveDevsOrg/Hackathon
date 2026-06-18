@@ -101,6 +101,36 @@ p {
   cursor: pointer;
 }
 
+.control-stack {
+  display: grid;
+  justify-items: end;
+  gap: 10px;
+}
+
+.mode-toggle {
+  display: inline-flex;
+  gap: 1px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+  background: rgba(8, 13, 18, 0.62);
+  backdrop-filter: blur(14px);
+}
+
+.mode-button {
+  min-height: 34px;
+  padding: 0 12px;
+  border: 0;
+  color: #c7d2df;
+  background: transparent;
+  cursor: pointer;
+}
+
+.mode-button.active {
+  color: #061017;
+  background: #35d07f;
+}
+
 #cameraButton:hover {
   border-color: rgba(255, 255, 255, 0.42);
   background: rgba(24, 35, 47, 0.86);
@@ -180,6 +210,15 @@ p {
   #cameraButton {
     width: 100%;
     justify-content: center;
+  }
+
+  .control-stack,
+  .mode-toggle {
+    width: 100%;
+  }
+
+  .mode-button {
+    flex: 1;
   }
 
   .metric-strip {

@@ -38,11 +38,24 @@ npx --yes @azure/static-web-apps-cli deploy /home/christopher/Hackathon/RF-DETR-
 - Renders wrist cursors, slash trails, and hit effects on the transparent 2D overlay.
 - Falls back to face detection if Pose Landmarker cannot load, but game controls require pose landmarks.
 
+## Gesture Trainer Mode
+
+The app also includes a `Gesture Trainer` mode for exploring hands-as-input workflows.
+
+- Loads MediaPipe Hand Landmarker in the browser.
+- Prompts the user to perform `Pinch click`, `Swipe right`, and `Zoom out`.
+- Records short hand landmark sequences for each attempt.
+- Scores movement with simple rule-based gesture checks.
+- Tracks the number of captured samples in the session.
+- Draws fingertip hints and trails without showing the camera image.
+
 ## Code Structure
 
 - `src/app.js`: camera lifecycle, detector loop, and UI metrics.
 - `src/detector.js`: RF-DETR placeholder, MediaPipe Pose Landmarker, and face-detection fallbacks.
 - `src/game.js`: 3D target spawning, wrist trails, projected collision detection, scoring, and overlay rendering.
+- `src/gesture-trainer.js`: gesture prompts, attempt capture, rule-based scoring, and trainer overlay rendering.
+- `src/hand-tracker.js`: MediaPipe Hand Landmarker wrapper.
 - `src/three-scene.js`: Three.js camera, renderer, tunnel arena, lighting, and target meshes.
 - `models/`: placeholder for future RF-DETR browser model assets.
 
