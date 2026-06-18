@@ -1,4 +1,4 @@
-import { createDetector } from "./detector.js?v=pose-landmarker-1";
+import { createDetector } from "./detector.js?v=pose-landmarker-2";
 
 const video = document.querySelector("#camera");
 const canvas = document.querySelector("#overlay");
@@ -134,17 +134,18 @@ function drawPoseLandmarks(landmarks) {
     ])
   );
   const connections = [
-    [7, 5], [5, 3], [3, 1], [1, 0], [0, 2], [2, 4], [4, 6], [6, 8],
-    [9, 10],
     [11, 12], [11, 13], [13, 15], [12, 14], [14, 16],
     [11, 23], [12, 24], [23, 24]
   ];
+  const visibleLandmarkIndexes = [11, 12, 13, 14, 15, 16, 23, 24];
 
   ctx.strokeStyle = "#f5c84b";
   ctx.fillStyle = "#f5c84b";
   ctx.lineWidth = 4;
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
+
+  drawHeadMarker(points);
 
   for (const [startIndex, endIndex] of connections) {
     const start = points.get(startIndex);
@@ -160,7 +161,9 @@ function drawPoseLandmarks(landmarks) {
     ctx.stroke();
   }
 
-  for (const point of points.values()) {
+  for (const index of visibleLandmarkIndexes) {
+    const point = points.get(index);
+
     if (!isVisiblePoint(point)) {
       continue;
     }
@@ -169,6 +172,23 @@ function drawPoseLandmarks(landmarks) {
     ctx.arc(point.x, point.y, 5, 0, Math.PI * 2);
     ctx.fill();
   }
+}
+
+function drawHeadMarker(points) {
+  const nose = points.get(0);
+  const leftShoulder = points.get(11);
+  const rightShoulder = points.get(12);
+
+  if (!isVisiblePoint(nose) || !isVisiblePoint(leftShoulder) || !isVisiblePoint(rightShoulder)) {
+    return;
+  }
+
+  const shoulderWidth = Math.abs(rightShoulder.x - leftShoulder.x);
+  const radius = Math.max(18, Math.min(48, shoulderWidth * 0.18));
+
+  ctx.beginPath();
+  ctx.arc(nose.x, nose.y + radius * 0.25, radius, 0, Math.PI * 2);
+  ctx.stroke();
 }
 
 function isVisiblePoint(point) {
