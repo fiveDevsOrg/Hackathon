@@ -107,6 +107,19 @@ p {
   font-size: 13px;
 }
 
+.camera-stage::after {
+  position: absolute;
+  inset: auto 24px 104px auto;
+  z-index: 2;
+  max-width: 360px;
+  color: #c7d2df;
+  font-size: 14px;
+  line-height: 1.45;
+  text-align: right;
+  content: "Use your wrists as blades. Green targets score. Red hazards reset the streak.";
+  pointer-events: none;
+}
+
 .metric-strip {
   position: absolute;
   left: 24px;
@@ -161,5 +174,9 @@ p {
     right: 18px;
     bottom: 18px;
     grid-template-columns: 1fr;
+  }
+
+  .camera-stage::after {
+    display: none;
   }
 }

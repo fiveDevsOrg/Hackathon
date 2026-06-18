@@ -1,20 +1,29 @@
-import { createDetector } from "./detector.js?v=pose-landmarker-2";
+import { createDetector } from "./detector.js?v=slash-rush-1";
+import { createSlashGame } from "./game.js?v=slash-rush-1";
 
 const video = document.querySelector("#camera");
 const canvas = document.querySelector("#overlay");
 const ctx = canvas.getContext("2d");
 const cameraButton = document.querySelector("#cameraButton");
 const statusText = document.querySelector("#statusText");
-const detectorMode = document.querySelector("#detectorMode");
-const personCount = document.querySelector("#personCount");
-const confidenceValue = document.querySelector("#confidenceValue");
+const scoreValue = document.querySelector("#scoreValue");
+const streakValue = document.querySelector("#streakValue");
+const timeValue = document.querySelector("#timeValue");
 
 let stream = null;
 let detector = null;
+let game = createSlashGame(canvas, ctx);
 let animationFrame = null;
 
 cameraButton.addEventListener("click", async () => {
   if (stream) {
+    if (game.isRoundOver()) {
+      game.start();
+      cameraButton.textContent = "Stop game";
+      statusText.textContent = "Slash green targets. Avoid red hazards.";
+      return;
+    }
+
     stopCamera();
     return;
   }
@@ -36,9 +45,9 @@ cameraButton.addEventListener("click", async () => {
     await video.play();
 
     detector = await createDetector();
-    detectorMode.textContent = detector.label;
-    cameraButton.textContent = "Stop camera";
-    statusText.textContent = "Looking for head and shoulders";
+    game.start();
+    cameraButton.textContent = "Stop game";
+    statusText.textContent = `${detector.label}: slash green targets`;
     renderLoop();
   } catch (error) {
     if (stream) {
@@ -48,7 +57,7 @@ cameraButton.addEventListener("click", async () => {
     }
 
     detector = null;
-    detectorMode.textContent = "Standby";
+    game.stop();
     statusText.textContent = cameraErrorMessage(error);
   } finally {
     cameraButton.disabled = false;
@@ -61,13 +70,14 @@ function stopCamera() {
   stream.getTracks().forEach((track) => track.stop());
   stream = null;
   detector = null;
+  game.stop();
   video.srcObject = null;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  detectorMode.textContent = "Standby";
-  personCount.textContent = "0";
-  confidenceValue.textContent = "0%";
+  scoreValue.textContent = "0";
+  streakValue.textContent = "0";
+  timeValue.textContent = "60";
   statusText.textContent = "Camera idle";
-  cameraButton.innerHTML = '<span class="button-icon" aria-hidden="true">●</span>Start camera';
+  cameraButton.innerHTML = '<span class="button-icon" aria-hidden="true">●</span>Start game';
 }
 
 async function renderLoop() {
@@ -76,8 +86,9 @@ async function renderLoop() {
 
   try {
     const detections = await detector.detect(video, canvas);
-    drawDetections(detections);
-    updateMetrics(detections);
+    const gameState = game.update(detections);
+    game.draw(detections);
+    updateMetrics(gameState, detections);
   } catch (error) {
     console.error("Detector failed", error);
     statusText.textContent = "Detector error";
@@ -97,109 +108,18 @@ function resizeCanvas() {
   }
 }
 
-function drawDetections(detections) {
-  for (const detection of detections) {
-    const { x, y, width, height } = detection.box;
-    const mirroredX = canvas.width - x - width;
-    const labelY = y > 28 ? y - 10 : y + 20;
+function updateMetrics(gameState, detections) {
+  scoreValue.textContent = String(gameState.score);
+  streakValue.textContent = String(gameState.streak);
+  timeValue.textContent = String(gameState.time);
 
-    ctx.save();
-    ctx.lineWidth = 3;
-    ctx.strokeStyle = "#35d07f";
-    ctx.fillStyle = "rgba(53, 208, 127, 0.12)";
-    ctx.strokeRect(mirroredX, y, width, height);
-    ctx.fillRect(mirroredX, y, width, height);
-
-    ctx.fillStyle = "#35d07f";
-    ctx.font = "600 14px Inter, system-ui, sans-serif";
-    ctx.fillText(`${detection.label} ${Math.round(detection.score * 100)}%`, mirroredX + 10, labelY);
-
-    if (detection.landmarks?.length) {
-      drawPoseLandmarks(detection.landmarks);
-    }
-
-    ctx.restore();
-  }
-}
-
-function drawPoseLandmarks(landmarks) {
-  const points = new Map(
-    landmarks.map((landmark) => [
-      landmark.index,
-      {
-        x: canvas.width - landmark.x,
-        y: landmark.y,
-        visibility: landmark.visibility
-      }
-    ])
-  );
-  const connections = [
-    [11, 12], [11, 13], [13, 15], [12, 14], [14, 16],
-    [11, 23], [12, 24], [23, 24]
-  ];
-  const visibleLandmarkIndexes = [11, 12, 13, 14, 15, 16, 23, 24];
-
-  ctx.strokeStyle = "#f5c84b";
-  ctx.fillStyle = "#f5c84b";
-  ctx.lineWidth = 4;
-  ctx.lineCap = "round";
-  ctx.lineJoin = "round";
-
-  drawHeadMarker(points);
-
-  for (const [startIndex, endIndex] of connections) {
-    const start = points.get(startIndex);
-    const end = points.get(endIndex);
-
-    if (!isVisiblePoint(start) || !isVisiblePoint(end)) {
-      continue;
-    }
-
-    ctx.beginPath();
-    ctx.moveTo(start.x, start.y);
-    ctx.lineTo(end.x, end.y);
-    ctx.stroke();
-  }
-
-  for (const index of visibleLandmarkIndexes) {
-    const point = points.get(index);
-
-    if (!isVisiblePoint(point)) {
-      continue;
-    }
-
-    ctx.beginPath();
-    ctx.arc(point.x, point.y, 5, 0, Math.PI * 2);
-    ctx.fill();
-  }
-}
-
-function drawHeadMarker(points) {
-  const nose = points.get(0);
-  const leftShoulder = points.get(11);
-  const rightShoulder = points.get(12);
-
-  if (!isVisiblePoint(nose) || !isVisiblePoint(leftShoulder) || !isVisiblePoint(rightShoulder)) {
+  if (!gameState.running && gameState.time === 0) {
+    statusText.textContent = `Round over: ${gameState.score} points`;
+    cameraButton.textContent = "New round";
     return;
   }
 
-  const shoulderWidth = Math.abs(rightShoulder.x - leftShoulder.x);
-  const radius = Math.max(18, Math.min(48, shoulderWidth * 0.18));
-
-  ctx.beginPath();
-  ctx.arc(nose.x, nose.y + radius * 0.25, radius, 0, Math.PI * 2);
-  ctx.stroke();
-}
-
-function isVisiblePoint(point) {
-  return point && point.visibility >= 0.35;
-}
-
-function updateMetrics(detections) {
-  personCount.textContent = String(detections.length);
-  const topScore = detections.reduce((score, detection) => Math.max(score, detection.score), 0);
-  confidenceValue.textContent = `${Math.round(topScore * 100)}%`;
-  statusText.textContent = detections.length ? "Head and shoulders identified" : "Looking for head and shoulders";
+  statusText.textContent = detections.length ? "Slash green targets. Avoid red hazards." : "Step into camera view";
 }
 
 function cameraErrorMessage(error) {

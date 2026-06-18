@@ -1,6 +1,6 @@
-# RF-DETR App
+# Slash Rush
 
-Static Web App MVP for camera-based head and shoulder detection.
+Static Web App MVP for a pose-controlled browser game. The player uses their wrists as blades to slash incoming green targets while avoiding red hazards.
 
 ## Local Run
 
@@ -18,28 +18,34 @@ http://localhost:5173
 
 ## Azure Static Web Apps
 
-Deploy from this folder:
+The Azure CLI in this environment does not expose `az staticwebapp deploy`, so deployment uses the Azure Static Web Apps CLI:
 
 ```bash
-az staticwebapp deploy \
-  --name RF-DETR-App \
-  --resource-group FiveDevs \
-  --source .
+TOKEN="$(az staticwebapp secrets list --name RF-DETR-App --resource-group FiveDevs --query properties.apiKey --output tsv)"
+npx --yes @azure/static-web-apps-cli deploy /home/christopher/Hackathon/RF-DETR-App --deployment-token "$TOKEN" --env production
 ```
 
+## Current Game Behavior
+
+- Uses the local browser camera.
+- Loads MediaPipe Pose Landmarker in the browser.
+- Uses wrist landmarks `15` and `16` as slash blades.
+- Spawns green targets and red hazards.
+- Scores successful slashes, tracks streaks, and runs a 60-second round.
+- Falls back to face detection if Pose Landmarker cannot load, but game controls require pose landmarks.
+
+## Code Structure
+
+- `src/app.js`: camera lifecycle, detector loop, and UI metrics.
+- `src/detector.js`: RF-DETR placeholder, MediaPipe Pose Landmarker, and face-detection fallbacks.
+- `src/game.js`: target spawning, wrist trails, collision detection, scoring, and canvas rendering.
+- `models/`: placeholder for future RF-DETR browser model assets.
+
 ## RF-DETR Integration
-
-The app is structured around `src/detector.js`.
-
-Current MVP behavior:
-
-- Uses a local camera stream.
-- Uses `FaceDetector` when the browser supports it.
-- Estimates a head-and-shoulders box from the detected face.
-- Falls back to a framing guide when native detection is unavailable.
 
 Next RF-DETR step:
 
 - Export or host an RF-DETR model suitable for browser inference.
 - Place model metadata/assets in `models/`.
 - Replace `tryCreateRfDetrDetector` with real inference code returning boxes in canvas coordinates.
+- Keep Pose Landmarker for wrist controls and skeleton overlays unless RF-DETR is paired with a keypoint model.
