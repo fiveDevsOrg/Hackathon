@@ -4,11 +4,11 @@ const PINCH_START_DISTANCE = 48;
 const PINCH_RELEASE_DISTANCE = 82;
 const PINCH_GRACE_MS = 260;
 const ZOOM_MIN_DELTA = 4.5;
-const SWIPE_MIN_DISTANCE_RATIO = 0.34;
-const SWIPE_MIN_DISTANCE = 230;
-const SWIPE_MAX_VERTICAL_RATIO = 0.28;
-const SWIPE_MIN_SPEED = 1.25;
-const SWIPE_MAX_DURATION_MS = 420;
+const SWIPE_MIN_DISTANCE_RATIO = 0.22;
+const SWIPE_MIN_DISTANCE = 145;
+const SWIPE_MAX_VERTICAL_RATIO = 0.42;
+const SWIPE_MIN_SPEED = 0.72;
+const SWIPE_MAX_DURATION_MS = 680;
 
 const gestureLabels = {
   "pinch-click": "Pinch click",
@@ -249,7 +249,7 @@ class GestureWorkspace {
       ? detectSwipe(primary, this.trails.get(primary.handedness), this.canvas.width)
       : null;
 
-    if (swipe && now - this.lastSwipeAt > 950) {
+    if (swipe && now - this.lastSwipeAt > 760) {
       this.selectedIndex = wrapIndex(this.selectedIndex + (swipe === "right" ? 1 : -1), this.sandbox.length);
       this.lastSwipeAt = now;
       this.lastAction = swipe === "right" ? "Swipe right" : "Swipe left";
@@ -329,28 +329,6 @@ class GestureWorkspace {
   }
 
   drawHandHints(hands) {
-    for (const [id, trail] of this.trails.entries()) {
-      if (trail.length < 2) {
-        continue;
-      }
-
-      this.ctx.save();
-      this.ctx.strokeStyle = id === "Left" ? "#35d07f" : "#59a9ff";
-      this.ctx.lineWidth = 6;
-      this.ctx.lineCap = "round";
-      this.ctx.shadowColor = this.ctx.strokeStyle;
-      this.ctx.shadowBlur = 16;
-      this.ctx.beginPath();
-      this.ctx.moveTo(trail[0].x, trail[0].y);
-
-      for (let index = 1; index < trail.length; index += 1) {
-        this.ctx.lineTo(trail[index].x, trail[index].y);
-      }
-
-      this.ctx.stroke();
-      this.ctx.restore();
-    }
-
     for (const hand of hands) {
       const thumb = getPoint(hand, 4);
       const index = getPoint(hand, 8);
@@ -516,7 +494,7 @@ function hasConsistentSwipeDirection(trail, dx) {
     }
   }
 
-  return measuredSteps >= 5 && matchingSteps / measuredSteps >= 0.72;
+  return measuredSteps >= 3 && matchingSteps / measuredSteps >= 0.62;
 }
 
 function isOpenHand(hand, canvasWidth) {
