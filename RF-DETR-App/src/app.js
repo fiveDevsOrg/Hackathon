@@ -1,6 +1,6 @@
-import { createGestureWorkspace } from "./gesture-trainer.js?v=sandbox-rules-1";
-import { createHandTracker } from "./hand-tracker.js?v=sandbox-rules-1";
-import { createArenaScene } from "./three-scene.js?v=sandbox-rules-1";
+import { createGestureWorkspace } from "./gesture-trainer.js?v=sandbox-help-1";
+import { createHandTracker } from "./hand-tracker.js?v=sandbox-help-1";
+import { createArenaScene } from "./three-scene.js?v=sandbox-help-1";
 
 const video = document.querySelector("#camera");
 const sceneHost = document.querySelector("#scene3d");
@@ -12,6 +12,9 @@ const captureModeButton = document.querySelector("#captureModeButton");
 const sandboxModeButton = document.querySelector("#sandboxModeButton");
 const gestureSelect = document.querySelector("#gestureSelect");
 const statusText = document.querySelector("#statusText");
+const helpButton = document.querySelector("#helpButton");
+const helpOverlay = document.querySelector("#helpOverlay");
+const closeHelpButton = document.querySelector("#closeHelpButton");
 const metricOneLabel = document.querySelector("#metricOneLabel");
 const metricTwoLabel = document.querySelector("#metricTwoLabel");
 const metricThreeLabel = document.querySelector("#metricThreeLabel");
@@ -30,6 +33,23 @@ const workspace = createGestureWorkspace(canvas, ctx);
 captureModeButton.classList.toggle("active", false);
 sandboxModeButton.classList.toggle("active", true);
 gestureSelect.disabled = true;
+
+helpButton.addEventListener("click", () => {
+  helpOverlay.classList.remove("hidden");
+  closeHelpButton.focus();
+});
+
+closeHelpButton.addEventListener("click", () => {
+  helpOverlay.classList.add("hidden");
+  cameraButton.focus();
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !helpOverlay.classList.contains("hidden")) {
+    helpOverlay.classList.add("hidden");
+    cameraButton.focus();
+  }
+});
 
 captureModeButton.addEventListener("click", () => setMode("capture"));
 sandboxModeButton.addEventListener("click", () => setMode("sandbox"));

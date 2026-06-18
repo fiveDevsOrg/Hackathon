@@ -34,6 +34,9 @@
               <span class="button-icon" aria-hidden="true">●</span>
               Start camera
             </button>
+            <button id="helpButton" type="button" aria-label="Show gesture help">
+              ?
+            </button>
             <button id="recordButton" class="hidden" type="button" disabled>
               Record sample
             </button>
@@ -53,9 +56,35 @@
             <strong id="timeValue">Idle</strong>
           </div>
         </div>
+        <div id="helpOverlay" class="help-overlay" role="dialog" aria-modal="true" aria-labelledby="helpTitle">
+          <div class="help-panel">
+            <div>
+              <h2 id="helpTitle">Gesture Controls</h2>
+              <p>Start the camera, keep your hands visible, then use these gestures to control the sandbox.</p>
+            </div>
+            <div class="gesture-grid">
+              <div>
+                <span class="gesture-mark pinch-mark" aria-hidden="true"></span>
+                <strong>Pinch hold</strong>
+                <p>Touch thumb and index finger near the selected shape, then move your hand to drag it.</p>
+              </div>
+              <div>
+                <span class="gesture-mark zoom-mark" aria-hidden="true"></span>
+                <strong>Two open hands</strong>
+                <p>Move both open hands apart or together to zoom the selected shape.</p>
+              </div>
+              <div>
+                <span class="gesture-mark swipe-mark" aria-hidden="true"></span>
+                <strong>Open-hand swipe</strong>
+                <p>Swipe left or right with one open hand to switch between the square, circle, and triangle.</p>
+              </div>
+            </div>
+            <button id="closeHelpButton" type="button">Start sandbox</button>
+          </div>
+        </div>
       </section>
     </main>
 
-    <script type="module" src="./src/app.js?v=sandbox-rules-1"></script>
+    <script type="module" src="./src/app.js?v=sandbox-help-1"></script>
   </body>
 </html>

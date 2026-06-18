@@ -92,10 +92,12 @@ p {
 }
 
 #cameraButton,
+#helpButton,
 #recordButton,
 .gesture-select {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 10px;
   min-height: 44px;
   padding: 0 16px;
@@ -105,6 +107,12 @@ p {
   background: rgba(17, 25, 34, 0.78);
   backdrop-filter: blur(14px);
   cursor: pointer;
+}
+
+#helpButton {
+  width: 44px;
+  padding: 0;
+  font-weight: 800;
 }
 
 .gesture-select {
@@ -143,6 +151,7 @@ p {
 }
 
 #cameraButton:hover,
+#helpButton:hover,
 #recordButton:hover,
 .gesture-select:hover {
   border-color: rgba(255, 255, 255, 0.42);
@@ -150,6 +159,7 @@ p {
 }
 
 #cameraButton:disabled,
+#helpButton:disabled,
 #recordButton:disabled {
   cursor: progress;
   opacity: 0.72;
@@ -162,19 +172,6 @@ p {
   place-items: center;
   color: #35d07f;
   font-size: 13px;
-}
-
-.camera-stage::after {
-  position: absolute;
-  inset: auto 24px 104px auto;
-  z-index: 2;
-  max-width: 360px;
-  color: #c7d2df;
-  font-size: 14px;
-  line-height: 1.45;
-  text-align: right;
-  content: "Pinch and hold on the selected item to drag it. Use two open hands to zoom. Swipe an open hand left or right to switch items.";
-  pointer-events: none;
 }
 
 .metric-strip {
@@ -215,6 +212,151 @@ p {
   line-height: 1.2;
 }
 
+.help-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(6, 10, 15, 0.78);
+  backdrop-filter: blur(12px);
+}
+
+.help-overlay.hidden {
+  display: none !important;
+}
+
+.help-panel {
+  width: min(760px, 100%);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+  padding: 26px;
+  background: rgba(15, 23, 32, 0.94);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.36);
+}
+
+.help-panel h2 {
+  margin: 0;
+  font-size: 28px;
+  line-height: 1.1;
+  letter-spacing: 0;
+}
+
+.help-panel p {
+  margin: 8px 0 0;
+}
+
+.gesture-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  margin: 22px 0;
+}
+
+.gesture-grid div {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.gesture-grid strong {
+  display: block;
+  margin-top: 12px;
+  font-size: 16px;
+}
+
+.gesture-grid p {
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.gesture-mark {
+  position: relative;
+  display: block;
+  width: 68px;
+  height: 44px;
+}
+
+.pinch-mark::before,
+.pinch-mark::after,
+.zoom-mark::before,
+.zoom-mark::after,
+.swipe-mark::before {
+  position: absolute;
+  content: "";
+}
+
+.pinch-mark::before,
+.pinch-mark::after {
+  top: 16px;
+  width: 28px;
+  height: 8px;
+  border-radius: 999px;
+  background: #35d07f;
+}
+
+.pinch-mark::before {
+  left: 8px;
+  transform: rotate(28deg);
+}
+
+.pinch-mark::after {
+  left: 30px;
+  transform: rotate(-28deg);
+}
+
+.zoom-mark::before,
+.zoom-mark::after {
+  top: 12px;
+  width: 22px;
+  height: 22px;
+  border: 3px solid #59a9ff;
+  border-radius: 50%;
+}
+
+.zoom-mark::before {
+  left: 2px;
+}
+
+.zoom-mark::after {
+  right: 2px;
+}
+
+.swipe-mark::before {
+  top: 19px;
+  left: 4px;
+  right: 4px;
+  height: 4px;
+  border-radius: 999px;
+  background: #f5c84b;
+}
+
+.swipe-mark::after {
+  position: absolute;
+  top: 11px;
+  right: 4px;
+  width: 18px;
+  height: 18px;
+  border-top: 4px solid #f5c84b;
+  border-right: 4px solid #f5c84b;
+  content: "";
+  transform: rotate(45deg);
+}
+
+#closeHelpButton {
+  min-height: 44px;
+  padding: 0 18px;
+  border: 0;
+  border-radius: 8px;
+  color: #061017;
+  background: #35d07f;
+  cursor: pointer;
+  font-weight: 800;
+}
+
 @media (max-width: 720px) {
   .top-bar {
     flex-direction: column;
@@ -224,6 +366,10 @@ p {
   #cameraButton {
     width: 100%;
     justify-content: center;
+  }
+
+  #helpButton {
+    width: 100%;
   }
 
   #recordButton,
@@ -247,7 +393,17 @@ p {
     grid-template-columns: 1fr;
   }
 
-  .camera-stage::after {
-    display: none;
+  .help-overlay {
+    align-items: start;
+    padding: 18px;
+    overflow: auto;
+  }
+
+  .help-panel {
+    padding: 20px;
+  }
+
+  .gesture-grid {
+    grid-template-columns: 1fr;
   }
 }

@@ -316,21 +316,10 @@ class GestureWorkspace {
       this.ctx.lineWidth = selected ? 4 : 2;
       this.ctx.shadowColor = selected ? item.color : "transparent";
       this.ctx.shadowBlur = selected ? 22 : 0;
-      this.ctx.beginPath();
-      this.ctx.roundRect(-radius, -radius * 0.72, radius * 2, radius * 1.44, 14);
-      this.ctx.fill();
-      this.ctx.stroke();
-      this.ctx.fillStyle = "#061017";
-      this.ctx.font = "800 18px Inter, system-ui, sans-serif";
-      this.ctx.textAlign = "center";
-      this.ctx.fillText(item.label, 0, 6);
+      drawSandboxShape(this.ctx, item.shape, radius);
       this.ctx.restore();
     }
 
-    this.ctx.fillStyle = "#c7d2df";
-    this.ctx.font = "600 16px Inter, system-ui, sans-serif";
-    this.ctx.textAlign = "center";
-    this.ctx.fillText("Pinch-hold to drag · Two open hands zoom · Open-hand swipe switches objects", this.canvas.width / 2, this.canvas.height - 132);
     this.ctx.restore();
   }
 
@@ -382,10 +371,28 @@ class GestureWorkspace {
 
 function createSandboxItems() {
   return [
-    { id: "photo", label: "Photo", x: 0, y: 0, radius: 74, scale: 1, color: "#35d07f" },
-    { id: "card", label: "Card", x: 0, y: 0, radius: 68, scale: 1, color: "#59a9ff" },
-    { id: "panel", label: "Panel", x: 0, y: 0, radius: 78, scale: 1, color: "#f5c84b" }
+    { id: "square", label: "Square", shape: "square", x: 0, y: 0, radius: 74, scale: 1, color: "#35d07f" },
+    { id: "circle", label: "Circle", shape: "circle", x: 0, y: 0, radius: 68, scale: 1, color: "#59a9ff" },
+    { id: "triangle", label: "Triangle", shape: "triangle", x: 0, y: 0, radius: 78, scale: 1, color: "#f5c84b" }
   ];
+}
+
+function drawSandboxShape(ctx, shape, radius) {
+  ctx.beginPath();
+
+  if (shape === "circle") {
+    ctx.arc(0, 0, radius * 0.92, 0, Math.PI * 2);
+  } else if (shape === "triangle") {
+    ctx.moveTo(0, -radius);
+    ctx.lineTo(radius * 0.98, radius * 0.76);
+    ctx.lineTo(-radius * 0.98, radius * 0.76);
+    ctx.closePath();
+  } else {
+    ctx.rect(-radius * 0.82, -radius * 0.82, radius * 1.64, radius * 1.64);
+  }
+
+  ctx.fill();
+  ctx.stroke();
 }
 
 function captureFrame(hands, now, canvasWidth) {
