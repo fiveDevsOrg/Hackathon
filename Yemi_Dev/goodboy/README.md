@@ -53,4 +53,17 @@ First 10 from warm + cold, in order:
 ## Demo-day notes
 5-minute show: (1) the one-sentence pitch; (2) live `goodboy.vercel.app` — landing page + the $7 Stripe deposit working; (3) the funnel numbers visits → clicks → deposits; (4) the RF-DETR verifier hero clip — call "SIT", real dog, live ✓ — as proof the product is real, not vaporware; (5) validation level + did we hit $100/15.
 
+## Build status (shipped)
+- ✅ **Live site:** https://goodboy-alpha.vercel.app (Vercel — Level 0: live + analytics)
+- ✅ **Model:** RF-DETR-Nano fine-tuned on sit/down/stand — **95.1% posture accuracy** on a held-out test set (self-labeled from the Apache-2.0 HF `dog-pose-cv` set, no manual annotation)
+- ✅ **Local trainer:** command-verify app (`app/`) — TTS command → live RF-DETR verify → scoreboard; `optimize_for_inference` confirmed on the RTX 4080; 4 logic tests pass
+
+## Run the local trainer (RTX 4080 + webcam)
+```bash
+cd Yemi_Dev/goodboy
+spike/.venv/Scripts/python.exe -m uvicorn app.server:app --host 127.0.0.1 --port 8000
+# open http://127.0.0.1:8000 → "Start session" → show your dog
+```
+Reproduce the model: `train/prep_data.py` (build dataset) → `train/finetune.py` (fine-tune). Verify: `train/verify_model.py`.
+
 > Full technical design: [`docs/DESIGN.md`](./docs/DESIGN.md)
