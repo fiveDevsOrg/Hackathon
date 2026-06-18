@@ -19,10 +19,11 @@ A working demo is the floor. The winner is whoever gets closest to **real dollar
 Everything lives under one banner — this **Hackathon** repo.
 
 - **`main` = the banner.** Shared rules + hackathon landing. Rarely touched.
-- **Your branch = your workstation.** `Polo_Dev`, `Yemi_Dev`, etc. Build your whole MVP here.
-- **Deploy your own branch.** Connect your *own* Vercel / Azure / etc. to your branch and set
-  it as the **production branch** (ignore the others). Keep deploy secrets in your own
-  platform, **not** in this repo — repo secrets are shared across all collaborators.
+- **Your branch = your workstation.** `Polo_Dev`, `Yemi_Dev`, etc. Host all your projects
+  here — one folder per project.
+- **One folder = one project = one deploy.** Point your *own* Vercel / Azure / etc. at the
+  project folder (set **Root Directory** to it) with your branch as the **production branch**.
+  Keep deploy secrets in your own platform, **not** in this repo — repo secrets are shared.
 
 ## The scoreboard (live on the [org page](https://github.com/fiveDevsOrg))
 
