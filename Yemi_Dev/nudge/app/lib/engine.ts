@@ -117,6 +117,7 @@ export function planNext(
   }
 
   for (const goal of GOALS) {
+    if (history.includes(goal.id)) continue; // already done this one — advance
     if (present.has(goal.id)) {
       return {
         targetId: goal.id,
