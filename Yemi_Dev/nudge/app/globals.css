@@ -96,3 +96,15 @@ body {
     opacity: 1;
   }
 }
+
+/* Confetti fall — defined directly so it never depends on a Tailwind utility. */
+@keyframes nudge-confetti-fall {
+  0% {
+    transform: translateY(-12vh) rotate(0deg);
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(112vh) rotate(620deg);
+    opacity: 0;
+  }
+}

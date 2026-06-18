@@ -52,16 +52,16 @@ export default function Confetti({ show }: { show: boolean }) {
       {pieces.map((p) => (
         <span
           key={p.id}
-          className="animate-confetti-fall absolute top-0 block"
+          className="absolute top-0 block"
           style={{
             left: `${p.left}%`,
             width: p.size,
             height: p.size * (p.rounded ? 1 : 1.6),
             background: p.color,
             borderRadius: p.rounded ? "9999px" : "2px",
-            animationDelay: `${p.delay}s`,
-            animationDuration: `${p.duration}s`,
-            animationFillMode: "forwards", // hold the off-screen end frame
+            // `both` keeps the piece off-screen during the start delay AND after
+            // it falls — so it's never a static bar parked at top:0.
+            animation: `nudge-confetti-fall ${p.duration}s linear ${p.delay}s both`,
           }}
         />
       ))}
