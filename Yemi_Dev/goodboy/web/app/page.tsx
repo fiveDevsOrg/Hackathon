@@ -78,7 +78,7 @@ export default function Home() {
                   </svg>
                 </a>
                 <a
-                  href="#how"
+                  href="#see"
                   className="inline-flex items-center justify-center gap-2 rounded-full border border-white/15 bg-white/[0.03] px-7 py-4 text-base font-medium text-bone transition-colors hover:border-white/30 hover:bg-white/[0.06]"
                 >
                   <span aria-hidden>▶</span> See it work
@@ -197,6 +197,53 @@ export default function Home() {
                 icon={<IconCheckBadge />}
                 highlight
               />
+            </div>
+          </div>
+        </section>
+
+        {/* ========================== SEE IT WORK ========================= */}
+        <section id="see" className="relative scroll-mt-24">
+          <div className="mx-auto max-w-6xl px-5 py-20 sm:px-8 lg:py-28">
+            <div className="grid items-center gap-10 lg:grid-cols-[0.9fr_1.1fr] lg:gap-14">
+              <div>
+                <SectionKicker>See it work</SectionKicker>
+                <h2 className="mt-4 font-display text-3xl font-semibold leading-tight text-bone sm:text-[2.6rem]">
+                  Real dogs.{" "}
+                  <span className="text-gradient-ember italic">Real verdicts.</span>
+                </h2>
+                <p className="mt-5 max-w-lg text-lg leading-relaxed text-muted">
+                  This is the actual GoodBoy model running on dogs it has never
+                  seen — calling{" "}
+                  <span className="font-semibold text-leaf">sit</span>,{" "}
+                  <span className="font-semibold text-sky">down</span>, and{" "}
+                  <span className="font-semibold text-ember-300">stand</span>{" "}
+                  with a live confidence score.
+                </p>
+                <div className="mt-7 flex flex-wrap gap-x-6 gap-y-2 font-mono text-[12px] uppercase tracking-[0.14em] text-muted/80">
+                  <span><span className="text-bone">95%</span> posture accuracy</span>
+                  <span className="text-white/15">·</span>
+                  <span><span className="text-bone">real-time</span> on one GPU</span>
+                  <span className="text-white/15">·</span>
+                  <span>held-out test set</span>
+                </div>
+              </div>
+              <div className="relative">
+                <div className="absolute left-1/2 top-1/2 -z-10 h-[360px] w-[360px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-ember/15 blur-[90px]" />
+                <div className="overflow-hidden rounded-3xl border border-white/12 bg-ink-900 shadow-card">
+                  <div className="flex items-center gap-2 border-b border-white/10 bg-ink-800/60 px-4 py-2.5">
+                    <span className="h-2.5 w-2.5 rounded-full bg-ember animate-blink-rec" />
+                    <span className="font-mono text-[11px] uppercase tracking-[0.16em] text-muted">
+                      GoodBoy · live verify
+                    </span>
+                  </div>
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src="/demo.gif"
+                    alt="GoodBoy verifying real dogs performing sit, down, and stand"
+                    className="block w-full"
+                  />
+                </div>
+              </div>
             </div>
           </div>
         </section>

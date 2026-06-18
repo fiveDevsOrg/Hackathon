@@ -9,9 +9,9 @@ import os
 
 from app.schema import Detection
 
-# Fine-tuned class-id -> product label. Categories were sit=1, down=2, stand=3
-# in the COCO json; verified/adjusted against the trained checkpoint.
-CLASS_MAP = {1: "sit", 2: "down", 3: "stand", 0: "sit"}
+# Fine-tuned class-id -> product label. The trained checkpoint returns
+# 0-indexed ids (verified on the test set: 0=sit, 1=down, 2=stand, 95% acc).
+CLASS_MAP = {0: "sit", 1: "down", 2: "stand"}
 
 _TRAIN_OUT = os.path.join(os.path.dirname(os.path.dirname(__file__)), "train", "output")
 
@@ -34,7 +34,7 @@ class Perception:
             weights = find_weights()
 
         if weights and os.path.exists(weights):
-            self.model = RFDETRNano(pretrain_weights=weights)
+            self.model = RFDETRNano(pretrain_weights=weights, num_classes=3)
             self.mode = "finetuned"
             self.weights = weights
             self._coco = None
