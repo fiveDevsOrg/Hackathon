@@ -88,14 +88,24 @@ export async function loadModel(onProgress?: (frac: number) => void): Promise<vo
   await sessionPromise;
 }
 
+// Reused across every frame. Allocating a new canvas + buffers per inference
+// (the old behavior) leaks memory fast and crashes mobile Safari's tab.
+let _canvas: HTMLCanvasElement | null = null;
+let _ctx: CanvasRenderingContext2D | null = null;
+let _inputBuf: Float32Array | null = null;
+
 export function preprocess(src: CanvasImageSource): Float32Array {
-  const c = document.createElement("canvas");
-  c.width = SIZE;
-  c.height = SIZE;
-  const ctx = c.getContext("2d")!;
+  if (!_canvas) {
+    _canvas = document.createElement("canvas");
+    _canvas.width = SIZE;
+    _canvas.height = SIZE;
+    _ctx = _canvas.getContext("2d", { willReadFrequently: true });
+    _inputBuf = new Float32Array(3 * SIZE * SIZE);
+  }
+  const ctx = _ctx!;
   ctx.drawImage(src, 0, 0, SIZE, SIZE);
   const { data } = ctx.getImageData(0, 0, SIZE, SIZE);
-  const out = new Float32Array(3 * SIZE * SIZE);
+  const out = _inputBuf!;
   const plane = SIZE * SIZE;
   for (let i = 0; i < plane; i++) {
     for (let ch = 0; ch < 3; ch++) {

@@ -116,7 +116,8 @@ export default function TryTrainer() {
         /* skip frame */
       }
     }
-    if (runningRef.current) requestAnimationFrame(() => loop());
+    // throttle (~4/s) — gives mobile GC room and avoids memory-pressure crashes
+    if (runningRef.current) setTimeout(() => loop(), 240);
   }, [pickCommand, say]);
 
   const start = useCallback(async () => {
