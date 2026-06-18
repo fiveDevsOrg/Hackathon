@@ -1,0 +1,7 @@
+# Training artifacts — keep scripts, ignore heavyweight data/weights
+dataset/
+output/
+*.pth
+*.pt
+*.onnx
+__pycache__/
