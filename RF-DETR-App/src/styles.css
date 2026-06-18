@@ -45,6 +45,7 @@ button {
 #camera {
   object-fit: cover;
   transform: scaleX(-1);
+  opacity: 0;
 }
 
 #overlay {

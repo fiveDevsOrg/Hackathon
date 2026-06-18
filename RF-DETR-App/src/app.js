@@ -1,5 +1,5 @@
-import { createDetector } from "./detector.js?v=slash-rush-1";
-import { createSlashGame } from "./game.js?v=slash-rush-1";
+import { createDetector } from "./detector.js?v=slash-rush-2";
+import { createSlashGame } from "./game.js?v=slash-rush-2";
 
 const video = document.querySelector("#camera");
 const canvas = document.querySelector("#overlay");

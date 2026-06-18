@@ -33,6 +33,13 @@ The deployed app:
 - Falls back to face detection if Pose Landmarker cannot load.
 - Shows no pose overlay when no person is detected.
 
+Later game iteration:
+
+- Converted the app into `Slash Rush`, a wrist-controlled target slashing game.
+- Hid the camera image and skeleton overlay from the player.
+- Kept MediaPipe Pose Landmarker active for wrist tracking.
+- Rendered an abstract game arena, wrist cursors, slash trails, targets, hazards, scoring, and round timing.
+
 ## Commits From This Session
 
 | Commit | Description |

@@ -5,11 +5,6 @@ const WRIST_RADIUS = 20;
 const MAX_TRAIL_POINTS = 10;
 const SPAWN_INTERVAL_MS = 760;
 
-const connections = [
-  [11, 12], [11, 13], [13, 15], [12, 14], [14, 16],
-  [11, 23], [12, 24], [23, 24]
-];
-
 export function createSlashGame(canvas, ctx) {
   return new SlashGame(canvas, ctx);
 }
@@ -82,9 +77,10 @@ class SlashGame {
   }
 
   draw(detections) {
-    this.drawPose(detections);
+    this.drawArena();
     this.drawTargets();
     this.drawTrails();
+    this.drawWristCursors(detections);
     this.drawEffects();
 
     if (!this.running) {
@@ -257,60 +253,73 @@ class SlashGame {
     this.effects = this.effects.filter((effect) => effect.life > 0);
   }
 
-  drawPose(detections) {
-    const detection = detections.find((item) => item.landmarks?.length);
-
-    if (!detection) {
-      return;
-    }
-
-    const points = new Map(
-      detection.landmarks.map((landmark) => [
-        landmark.index,
-        {
-          x: this.canvas.width - landmark.x,
-          y: landmark.y,
-          visibility: landmark.visibility
-        }
-      ])
+  drawArena() {
+    const gradient = this.ctx.createRadialGradient(
+      this.canvas.width * 0.5,
+      this.canvas.height * 0.46,
+      this.canvas.width * 0.08,
+      this.canvas.width * 0.5,
+      this.canvas.height * 0.5,
+      Math.max(this.canvas.width, this.canvas.height) * 0.75
     );
+    gradient.addColorStop(0, "#172533");
+    gradient.addColorStop(0.54, "#0d141d");
+    gradient.addColorStop(1, "#070b10");
 
     this.ctx.save();
-    this.ctx.strokeStyle = "rgba(245, 200, 75, 0.72)";
-    this.ctx.fillStyle = "#f5c84b";
-    this.ctx.lineWidth = 4;
-    this.ctx.lineCap = "round";
-    this.ctx.lineJoin = "round";
+    this.ctx.fillStyle = gradient;
+    this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
 
-    drawHeadMarker(this.ctx, points);
+    this.ctx.globalAlpha = 0.18;
+    this.ctx.strokeStyle = "#35d07f";
+    this.ctx.lineWidth = 1;
 
-    for (const [startIndex, endIndex] of connections) {
-      const start = points.get(startIndex);
-      const end = points.get(endIndex);
+    const gridSize = 72;
+    const drift = (performance.now() * 0.012) % gridSize;
 
-      if (!isVisiblePoint(start) || !isVisiblePoint(end)) {
-        continue;
-      }
-
+    for (let x = -gridSize + drift; x < this.canvas.width + gridSize; x += gridSize) {
       this.ctx.beginPath();
-      this.ctx.moveTo(start.x, start.y);
-      this.ctx.lineTo(end.x, end.y);
+      this.ctx.moveTo(x, 0);
+      this.ctx.lineTo(x, this.canvas.height);
       this.ctx.stroke();
     }
 
-    for (const index of [11, 12, 13, 14, 15, 16, 23, 24]) {
-      const point = points.get(index);
-
-      if (!isVisiblePoint(point)) {
-        continue;
-      }
-
+    for (let y = -gridSize + drift; y < this.canvas.height + gridSize; y += gridSize) {
       this.ctx.beginPath();
-      this.ctx.arc(point.x, point.y, index === 15 || index === 16 ? 9 : 5, 0, Math.PI * 2);
-      this.ctx.fill();
+      this.ctx.moveTo(0, y);
+      this.ctx.lineTo(this.canvas.width, y);
+      this.ctx.stroke();
+    }
+
+    this.ctx.globalAlpha = 1;
+    this.ctx.strokeStyle = "rgba(89, 169, 255, 0.24)";
+    this.ctx.lineWidth = 2;
+
+    for (let radius = 140; radius < Math.max(this.canvas.width, this.canvas.height); radius += 140) {
+      this.ctx.beginPath();
+      this.ctx.arc(this.canvas.width / 2, this.canvas.height / 2, radius, 0, Math.PI * 2);
+      this.ctx.stroke();
     }
 
     this.ctx.restore();
+  }
+
+  drawWristCursors(detections) {
+    const wrists = this.extractWrists(detections);
+
+    for (const wrist of wrists) {
+      this.ctx.save();
+      this.ctx.fillStyle = wrist.id === "left" ? "#35d07f" : "#59a9ff";
+      this.ctx.strokeStyle = "rgba(255, 255, 255, 0.78)";
+      this.ctx.lineWidth = 2;
+      this.ctx.shadowColor = this.ctx.fillStyle;
+      this.ctx.shadowBlur = 20;
+      this.ctx.beginPath();
+      this.ctx.arc(wrist.x, wrist.y, 12, 0, Math.PI * 2);
+      this.ctx.fill();
+      this.ctx.stroke();
+      this.ctx.restore();
+    }
   }
 
   drawTargets() {
@@ -421,23 +430,6 @@ function drawHazard(ctx, radius) {
   ctx.stroke();
 }
 
-function drawHeadMarker(ctx, points) {
-  const nose = points.get(0);
-  const leftShoulder = points.get(11);
-  const rightShoulder = points.get(12);
-
-  if (!isVisiblePoint(nose) || !isVisiblePoint(leftShoulder) || !isVisiblePoint(rightShoulder)) {
-    return;
-  }
-
-  const shoulderWidth = Math.abs(rightShoulder.x - leftShoulder.x);
-  const radius = Math.max(18, Math.min(48, shoulderWidth * 0.18));
-
-  ctx.beginPath();
-  ctx.arc(nose.x, nose.y + radius * 0.25, radius, 0, Math.PI * 2);
-  ctx.stroke();
-}
-
 function createEffect(x, y, color, label) {
   return {
     x,
@@ -451,8 +443,4 @@ function createEffect(x, y, color, label) {
 
 function distance(a, b) {
   return Math.hypot(a.x - b.x, a.y - b.y);
-}
-
-function isVisiblePoint(point) {
-  return point && point.visibility >= 0.35;
 }

@@ -28,10 +28,12 @@ npx --yes @azure/static-web-apps-cli deploy /home/christopher/Hackathon/RF-DETR-
 ## Current Game Behavior
 
 - Uses the local browser camera.
+- Hides the camera image from the player while still using it for pose input.
 - Loads MediaPipe Pose Landmarker in the browser.
 - Uses wrist landmarks `15` and `16` as slash blades.
 - Spawns green targets and red hazards.
 - Scores successful slashes, tracks streaks, and runs a 60-second round.
+- Renders an abstract game arena, wrist cursors, slash trails, targets, hazards, and hit effects.
 - Falls back to face detection if Pose Landmarker cannot load, but game controls require pose landmarks.
 
 ## Code Structure
