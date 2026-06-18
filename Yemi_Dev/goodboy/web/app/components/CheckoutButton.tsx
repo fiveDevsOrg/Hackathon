@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
+import { ev } from "../lib/analytics";
 
 /**
  * Founding-deposit CTA. Resolves the cheapest available path:
@@ -12,22 +13,37 @@ export default function CheckoutButton({
   className,
   children,
   fallback = "#waitlist",
+  location = "page",
 }: {
   className?: string;
   children: React.ReactNode;
   fallback?: string;
+  location?: string;
 }) {
   const [loading, setLoading] = useState(false);
   const link = process.env.NEXT_PUBLIC_STRIPE_PAYMENT_LINK;
+  // stable per-button key so a double-click reuses the same Stripe idempotency key
+  const keyRef = useRef<string>("");
+  if (!keyRef.current) {
+    keyRef.current =
+      typeof crypto !== "undefined" && crypto.randomUUID
+        ? crypto.randomUUID()
+        : `gb_${Date.now()}_${Math.round(Math.random() * 1e9)}`;
+  }
 
   async function go() {
+    ev("checkout_click", { location });
     if (link) {
       window.location.href = link;
       return;
     }
     setLoading(true);
     try {
-      const r = await fetch("/api/checkout", { method: "POST" });
+      const r = await fetch("/api/checkout", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ idempotencyKey: keyRef.current }),
+      });
       if (r.ok) {
         const data = await r.json();
         if (data?.url) {

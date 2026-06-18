@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { ev } from "../lib/analytics";
 
 type Status = "idle" | "loading" | "success" | "error";
 
@@ -27,6 +28,7 @@ export default function WaitlistForm() {
       const data = (await res.json()) as { ok: boolean; error?: string };
 
       if (res.ok && data.ok) {
+        ev("waitlist_submitted");
         setStatus("success");
       } else {
         setStatus("error");

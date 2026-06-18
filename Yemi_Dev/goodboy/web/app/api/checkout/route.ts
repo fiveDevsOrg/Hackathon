@@ -16,6 +16,18 @@ export async function POST(req: Request) {
   try {
     const Stripe = (await import("stripe")).default;
     const stripe = new Stripe(key);
+
+    // optional client-supplied idempotency key — prevents duplicate sessions
+    // on double-clicks / retries
+    let idemKey: string | undefined;
+    try {
+      const body = await req.json();
+      const k = (body as { idempotencyKey?: unknown })?.idempotencyKey;
+      if (typeof k === "string" && k.length > 0 && k.length <= 200) idemKey = k;
+    } catch {
+      /* no / invalid body -> proceed without an idempotency key */
+    }
+
     const origin =
       req.headers.get("origin") ||
       `https://${req.headers.get("host") ?? "goodboy-alpha.vercel.app"}`;
@@ -42,7 +54,7 @@ export async function POST(req: Request) {
       cancel_url: `${origin}/?checkout=canceled`,
       submit_type: "pay",
       billing_address_collection: "auto",
-    });
+    }, idemKey ? { idempotencyKey: idemKey } : undefined);
 
     return NextResponse.json({ url: session.url });
   } catch (err) {

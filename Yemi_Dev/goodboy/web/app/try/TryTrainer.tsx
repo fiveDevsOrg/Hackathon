@@ -2,14 +2,31 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { activeBackend, classify, loadModel, type Label } from "./model";
+import CheckoutButton from "../components/CheckoutButton";
+import { ev } from "../lib/analytics";
 
 const COMMANDS: Label[] = ["sit", "down", "stand"];
-const MATCH_CONF = 0.6;
-const NEED_STABLE = 2;
 const NODOG_CONF = 0.45;
 const COMMAND_MS = 14000;
+const SHARE_URL = "https://goodboy-alpha.vercel.app/try";
+
+type Sensitivity = "easy" | "normal" | "hard";
+const SENSITIVITY: Record<Sensitivity, { conf: number; stable: number; label: string }> = {
+  easy: { conf: 0.5, stable: 1, label: "Easy" },
+  normal: { conf: 0.6, stable: 2, label: "Normal" },
+  hard: { conf: 0.72, stable: 3, label: "Hard" },
+};
 
 type Seeing = { label: Label; conf: number } | null;
+
+// Badge catalog: id -> { emoji, title }
+const BADGES = {
+  first: { emoji: "🥉", title: "First correct" },
+  streak5: { emoji: "🥈", title: "5-streak" },
+  streak10: { emoji: "🥇", title: "10-streak" },
+  reps25: { emoji: "🏆", title: "25 total reps" },
+} as const;
+type BadgeId = keyof typeof BADGES;
 
 export default function TryTrainer() {
   const [phase, setPhase] = useState<"intro" | "loading" | "ready">("intro");
@@ -30,6 +47,22 @@ export default function TryTrainer() {
   const [flash, setFlash] = useState<"ok" | "no" | null>(null);
   const [noDog, setNoDog] = useState(false);
 
+  // sensitivity (persisted)
+  const [sensitivity, setSensitivity] = useState<Sensitivity>("normal");
+
+  // persisted lifetime stats + badges
+  const [bestEver, setBestEver] = useState(0);
+  const [reps, setReps] = useState(0);
+  const [badges, setBadges] = useState<BadgeId[]>([]);
+
+  // session deposit-CTA bridge
+  const [sessionWins, setSessionWins] = useState(0);
+  const [ctaShown, setCtaShown] = useState(false);
+  const [ctaDismissed, setCtaDismissed] = useState(false);
+
+  // share affordance
+  const [copied, setCopied] = useState(false);
+
   // upload state
   const [upImg, setUpImg] = useState<string | null>(null);
   const [upVerdict, setUpVerdict] = useState<{ label: Label; conf: number; scores: number[] } | null>(null);
@@ -41,6 +74,18 @@ export default function TryTrainer() {
   const stableRef = useRef(0);
   const deadlineRef = useRef(0);
   const streakRef = useRef(0);
+
+  // refs read inside the rAF/timeout loop (avoid stale closures)
+  const sensRef = useRef<Sensitivity>("normal");
+  const sessionWinsRef = useRef(0);
+  const repsRef = useRef(0);
+  const bestEverRef = useRef(0);
+  const badgesRef = useRef<BadgeId[]>([]);
+
+  // lazily-created AudioContext for success/miss cues
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  // tracks whether we've fired the once-per-visit "first_verdict" analytics event
+  const firstVerdictRef = useRef(false);
 
   const say = useCallback(
     (t: string) => {
@@ -54,6 +99,148 @@ export default function TryTrainer() {
     [voiceOn],
   );
 
+  // ----- persisted state: hydrate once on mount -----
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const s = localStorage.getItem("gb_sensitivity") as Sensitivity | null;
+      if (s && s in SENSITIVITY) {
+        setSensitivity(s);
+        sensRef.current = s;
+      }
+      const b = Number(localStorage.getItem("gb_best") || 0);
+      if (Number.isFinite(b) && b > 0) {
+        setBestEver(b);
+        bestEverRef.current = b;
+      }
+      const r = Number(localStorage.getItem("gb_reps") || 0);
+      if (Number.isFinite(r) && r > 0) {
+        setReps(r);
+        repsRef.current = r;
+      }
+      const raw = localStorage.getItem("gb_badges");
+      if (raw) {
+        const parsed: unknown = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          const valid = parsed.filter((x): x is BadgeId => typeof x === "string" && x in BADGES);
+          setBadges(valid);
+          badgesRef.current = valid;
+        }
+      }
+    } catch {
+      /* localStorage unavailable / corrupt — ignore */
+    }
+  }, []);
+
+  // persist sensitivity whenever it changes (and keep the ref in sync)
+  const changeSensitivity = useCallback((s: Sensitivity) => {
+    setSensitivity(s);
+    sensRef.current = s;
+    try {
+      localStorage.setItem("gb_sensitivity", s);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  // ----- audio cues (lazy AudioContext, created on a user gesture) -----
+  const getAudioCtx = useCallback((): AudioContext | null => {
+    if (typeof window === "undefined") return null;
+    if (!audioCtxRef.current) {
+      const AC = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      if (!AC) return null;
+      try {
+        audioCtxRef.current = new AC();
+      } catch {
+        return null;
+      }
+    }
+    const ctx = audioCtxRef.current;
+    if (ctx && ctx.state === "suspended") ctx.resume().catch(() => {});
+    return ctx;
+  }, []);
+
+  const tone = useCallback(
+    (freq: number, start: number, dur: number, gain: number, type: OscillatorType = "sine") => {
+      const ctx = audioCtxRef.current;
+      if (!ctx) return;
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = type;
+      osc.frequency.value = freq;
+      const t0 = ctx.currentTime + start;
+      g.gain.setValueAtTime(0, t0);
+      g.gain.linearRampToValueAtTime(gain, t0 + 0.012);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+      osc.connect(g).connect(ctx.destination);
+      osc.start(t0);
+      osc.stop(t0 + dur + 0.02);
+    },
+    [],
+  );
+
+  const cueSuccess = useCallback(() => {
+    if (getAudioCtx()) {
+      // pleasant two-tone "ding" (C6 -> E6)
+      tone(1046.5, 0, 0.18, 0.18, "sine");
+      tone(1318.5, 0.1, 0.22, 0.16, "sine");
+    }
+    try {
+      navigator.vibrate?.(60);
+    } catch {
+      /* ignore */
+    }
+  }, [getAudioCtx, tone]);
+
+  const cueMiss = useCallback(() => {
+    if (getAudioCtx()) {
+      // soft low "buzz"
+      tone(180, 0, 0.22, 0.1, "triangle");
+    }
+    try {
+      navigator.vibrate?.(20);
+    } catch {
+      /* ignore */
+    }
+  }, [getAudioCtx, tone]);
+
+  // ----- badge awarding (reads refs, persists, updates UI) -----
+  const awardBadge = useCallback((id: BadgeId) => {
+    if (badgesRef.current.includes(id)) return;
+    const next = [...badgesRef.current, id];
+    badgesRef.current = next;
+    setBadges(next);
+    try {
+      localStorage.setItem("gb_badges", JSON.stringify(next));
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  // ----- share -----
+  const share = useCallback(
+    async (text: string) => {
+      ev("share_clicked");
+      const data = { title: "GoodBoy", text, url: SHARE_URL };
+      try {
+        if (typeof navigator !== "undefined" && navigator.share) {
+          await navigator.share(data);
+          return;
+        }
+      } catch {
+        /* user cancelled or share failed — fall through to copy */
+      }
+      try {
+        await navigator.clipboard.writeText(`${text} ${SHARE_URL}`);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1600);
+      } catch {
+        /* clipboard blocked — nothing more we can do */
+      }
+    },
+    [],
+  );
+
   const ensureModel = useCallback(async () => {
     if (phase === "ready") return;
     setPhase("loading");
@@ -61,6 +248,7 @@ export default function TryTrainer() {
       await loadModel((f) => setLoadPct(f));
       setEngine(activeBackend);
       setPhase("ready");
+      ev("model_loaded", { engine: activeBackend });
     } catch (e) {
       setErr("Could not load the model. Try a desktop browser (Chrome/Edge).");
       setPhase("intro");
@@ -89,14 +277,25 @@ export default function TryTrainer() {
         const seesDog = r.conf >= NODOG_CONF;
         setNoDog(!seesDog);
 
-        if (seesDog && r.label === cmdRef.current && r.conf >= MATCH_CONF) {
+        // sensitivity-driven thresholds, read from a ref so mid-session
+        // changes take effect immediately (no stale closure)
+        const { conf: matchConf, stable: needStable } = SENSITIVITY[sensRef.current];
+
+        // once-per-visit "first_verdict" — the first frame we actually
+        // produce a confident read counts as the camera's first verdict
+        if (!firstVerdictRef.current) {
+          firstVerdictRef.current = true;
+          ev("first_verdict", { mode: "camera" });
+        }
+
+        if (seesDog && r.label === cmdRef.current && r.conf >= matchConf) {
           stableRef.current += 1;
         } else {
           stableRef.current = 0;
         }
         setStable(stableRef.current);
 
-        if (stableRef.current >= NEED_STABLE) {
+        if (stableRef.current >= needStable) {
           // success
           setScore((s) => s + 1);
           streakRef.current += 1;
@@ -104,6 +303,36 @@ export default function TryTrainer() {
           setBest((b) => Math.max(b, streakRef.current));
           setFlash("ok");
           say("Good boy!");
+          cueSuccess();
+
+          // session win bridge -> deposit CTA at 3
+          sessionWinsRef.current += 1;
+          setSessionWins(sessionWinsRef.current);
+
+          // persisted lifetime reps + best-ever streak
+          repsRef.current += 1;
+          setReps(repsRef.current);
+          try {
+            localStorage.setItem("gb_reps", String(repsRef.current));
+          } catch {
+            /* ignore */
+          }
+          if (streakRef.current > bestEverRef.current) {
+            bestEverRef.current = streakRef.current;
+            setBestEver(bestEverRef.current);
+            try {
+              localStorage.setItem("gb_best", String(bestEverRef.current));
+            } catch {
+              /* ignore */
+            }
+          }
+
+          // badges
+          awardBadge("first");
+          if (streakRef.current >= 5) awardBadge("streak5");
+          if (streakRef.current >= 10) awardBadge("streak10");
+          if (repsRef.current >= 25) awardBadge("reps25");
+
           setTimeout(() => setFlash(null), 700);
           pickCommand();
         } else if (Date.now() > deadlineRef.current) {
@@ -111,6 +340,7 @@ export default function TryTrainer() {
           streakRef.current = 0;
           setStreak(0);
           setFlash("no");
+          cueMiss();
           setTimeout(() => setFlash(null), 700);
           pickCommand();
         }
@@ -120,10 +350,12 @@ export default function TryTrainer() {
     }
     // throttle (~4/s) — gives mobile GC room and avoids memory-pressure crashes
     if (runningRef.current) setTimeout(() => loop(), 240);
-  }, [pickCommand, say]);
+  }, [pickCommand, say, awardBadge, cueSuccess, cueMiss]);
 
   const start = useCallback(async () => {
     setErr(null);
+    // warm up the AudioContext on this user gesture so cues can play later
+    getAudioCtx();
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: "environment", width: { ideal: 640 }, height: { ideal: 480 } },
@@ -133,19 +365,33 @@ export default function TryTrainer() {
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
       }
-    } catch {
-      setErr("Camera blocked. Allow camera access, or use the Upload tab.");
+    } catch (e) {
+      const name = e instanceof DOMException ? e.name : "";
+      if (name === "NotAllowedError" || name === "SecurityError") {
+        setErr("Camera permission was blocked — allow it in your browser/site settings, or use the Upload tab.");
+      } else if (name === "NotFoundError" || name === "OverconstrainedError") {
+        setErr("No camera found — try the Upload tab.");
+      } else if (name === "NotReadableError") {
+        setErr("Your camera is in use by another app.");
+      } else {
+        setErr("Camera blocked. Allow camera access, or use the Upload tab.");
+      }
       return;
     }
     await ensureModel();
     setScore(0);
     setStreak(0);
     streakRef.current = 0;
+    sessionWinsRef.current = 0;
+    setSessionWins(0);
+    setCtaShown(false);
+    setCtaDismissed(false);
     runningRef.current = true;
     setRunning(true);
+    ev("try_started");
     pickCommand();
     loop();
-  }, [ensureModel, loop, pickCommand]);
+  }, [ensureModel, loop, pickCommand, getAudioCtx]);
 
   const pause = useCallback(() => {
     runningRef.current = false;
@@ -175,6 +421,11 @@ export default function TryTrainer() {
         await img.decode();
         const r = await classify(img);
         setUpVerdict(r);
+        if (!firstVerdictRef.current) {
+          firstVerdictRef.current = true;
+          ev("first_verdict", { mode: "upload" });
+        }
+        ev("upload_verdict", { label: r.label });
       } catch {
         setErr("Inference failed on that image.");
       }
@@ -183,14 +434,30 @@ export default function TryTrainer() {
     [ensureModel],
   );
 
+  // clears the uploaded photo + verdict, back to the dropzone
+  const clearUpload = useCallback(() => {
+    setUpImg((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return null;
+    });
+    setUpVerdict(null);
+    setErr(null);
+  }, []);
+
   useEffect(() => {
     return () => {
       runningRef.current = false;
       const v = videoRef.current;
       const s = v?.srcObject as MediaStream | null;
       s?.getTracks().forEach((t) => t.stop());
+      audioCtxRef.current?.close().catch(() => {});
     };
   }, []);
+
+  // surface the deposit CTA once the pup nails 3 in a session
+  useEffect(() => {
+    if (sessionWins >= 3 && !ctaDismissed) setCtaShown(true);
+  }, [sessionWins, ctaDismissed]);
 
   const suggestion = noDog
     ? "Point the camera at your dog (whole body in frame)."
@@ -202,6 +469,30 @@ export default function TryTrainer() {
 
   return (
     <div className="grid gap-6 lg:grid-cols-[1.1fr_0.9fr]">
+      <style jsx>{`
+        .gb-flash {
+          animation: gb-pop 0.34s cubic-bezier(0.18, 0.9, 0.32, 1.4) both;
+        }
+        @keyframes gb-pop {
+          0% {
+            transform: scale(0.4);
+            opacity: 0;
+          }
+          60% {
+            transform: scale(1.08);
+            opacity: 1;
+          }
+          100% {
+            transform: scale(1);
+            opacity: 1;
+          }
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .gb-flash {
+            animation: none;
+          }
+        }
+      `}</style>
       {/* ---------------- stage ---------------- */}
       <div>
         <div className="mb-3 inline-flex rounded-full border border-white/10 bg-ink-800/60 p-1 text-sm">
@@ -225,8 +516,9 @@ export default function TryTrainer() {
               <video ref={videoRef} playsInline muted className="h-full w-full object-contain" />
               {flash && (
                 <div
-                  className="absolute inset-0 grid place-items-center text-[120px]"
+                  className="gb-flash absolute inset-0 grid place-items-center text-[120px]"
                   style={{ color: flash === "ok" ? "#3fb950" : "#f0556d" }}
+                  aria-hidden="true"
                 >
                   {flash === "ok" ? "✓" : "✗"}
                 </div>
@@ -279,19 +571,71 @@ export default function TryTrainer() {
           )}
         </div>
 
-        {err && <p className="mt-3 text-sm text-[#f0556d]">{err}</p>}
+        {err && (
+          <div className="mt-3 flex flex-wrap items-center gap-3">
+            <p className="text-sm text-[#f0556d]">{err}</p>
+            {mode === "camera" && (
+              <button
+                onClick={() => {
+                  setErr(null);
+                  setMode("upload");
+                }}
+                aria-label="Switch to photo upload"
+                className="rounded-lg border border-white/15 px-3 py-1.5 text-sm text-bone hover:border-white/30"
+              >
+                🖼️ Switch to Upload
+              </button>
+            )}
+          </div>
+        )}
 
         {mode === "camera" && (
-          <div className="mt-3 flex flex-wrap items-center gap-2">
-            {!running ? (
-              <button onClick={resume} disabled={phase !== "ready"} className="rounded-lg border border-white/15 px-4 py-2 text-sm text-bone disabled:opacity-40 hover:border-white/30">▶ Resume</button>
-            ) : (
-              <button onClick={pause} className="rounded-lg border border-white/15 px-4 py-2 text-sm text-bone hover:border-white/30">⏸ Pause</button>
-            )}
-            <button onClick={skip} disabled={!running} className="rounded-lg border border-white/15 px-4 py-2 text-sm text-bone disabled:opacity-40 hover:border-white/30">⏭ Skip command</button>
-            <button onClick={() => { setScore(0); setStreak(0); streakRef.current = 0; }} className="rounded-lg border border-white/15 px-4 py-2 text-sm text-bone hover:border-white/30">↺ Reset score</button>
-            <button onClick={() => setVoiceOn((v) => !v)} className={`rounded-lg border px-4 py-2 text-sm ${voiceOn ? "border-ember/40 text-ember-300" : "border-white/15 text-muted"}`}>{voiceOn ? "🔊 Voice on" : "🔇 Voice off"}</button>
-          </div>
+          <>
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              {!running ? (
+                <button onClick={resume} disabled={phase !== "ready"} className="rounded-lg border border-white/15 px-4 py-2 text-sm text-bone disabled:opacity-40 hover:border-white/30">▶ Resume</button>
+              ) : (
+                <button onClick={pause} className="rounded-lg border border-white/15 px-4 py-2 text-sm text-bone hover:border-white/30">⏸ Pause</button>
+              )}
+              <button onClick={skip} disabled={!running} className="rounded-lg border border-white/15 px-4 py-2 text-sm text-bone disabled:opacity-40 hover:border-white/30">⏭ Skip command</button>
+              <button onClick={() => { setScore(0); setStreak(0); streakRef.current = 0; }} className="rounded-lg border border-white/15 px-4 py-2 text-sm text-bone hover:border-white/30">↺ Reset score</button>
+              <button onClick={() => setVoiceOn((v) => !v)} className={`rounded-lg border px-4 py-2 text-sm ${voiceOn ? "border-ember/40 text-ember-300" : "border-white/15 text-muted"}`}>{voiceOn ? "🔊 Voice on" : "🔇 Voice off"}</button>
+              {best > 0 && (
+                <button
+                  onClick={() => share(`My dog scored a ${Math.max(best, bestEver)}-streak on GoodBoy 🐕 Try it free:`)}
+                  aria-label="Share your result"
+                  className="rounded-lg border border-white/15 px-4 py-2 text-sm text-bone hover:border-white/30"
+                >
+                  {copied ? "✓ Copied!" : "🔗 Share"}
+                </button>
+              )}
+            </div>
+
+            {/* sensitivity slider */}
+            <div className="mt-3 rounded-xl border border-white/10 bg-ink-800/50 p-3">
+              <div className="mb-2 flex items-center justify-between">
+                <span className="font-mono text-[10px] uppercase tracking-wider text-muted">Sensitivity</span>
+                <span className="font-mono text-xs text-ember-300">{SENSITIVITY[sensitivity].label}</span>
+              </div>
+              <div role="radiogroup" aria-label="Match sensitivity" className="inline-flex w-full overflow-hidden rounded-lg border border-white/10">
+                {(["easy", "normal", "hard"] as const).map((s) => (
+                  <button
+                    key={s}
+                    role="radio"
+                    aria-checked={sensitivity === s}
+                    aria-label={`${SENSITIVITY[s].label} sensitivity`}
+                    onClick={() => changeSensitivity(s)}
+                    className={`flex-1 px-3 py-1.5 text-sm font-medium capitalize transition-colors ${
+                      sensitivity === s ? "bg-ember text-ink-900" : "text-muted hover:text-bone"
+                    }`}
+                  >
+                    {s}
+                  </button>
+                ))}
+              </div>
+              <p className="mt-2 text-xs text-muted">Easy helps young/distracted dogs; Hard rewards a crisp pose.</p>
+            </div>
+          </>
         )}
       </div>
 
@@ -320,7 +664,7 @@ export default function TryTrainer() {
                 />
               </div>
               <div className="mt-3 flex items-center gap-1.5">
-                {Array.from({ length: NEED_STABLE }).map((_, i) => (
+                {Array.from({ length: SENSITIVITY[sensitivity].stable }).map((_, i) => (
                   <span key={i} className={`h-2 flex-1 rounded-full ${i < stable ? "bg-leaf" : "bg-white/10"}`} />
                 ))}
                 <span className="ml-2 font-mono text-xs text-muted">lock-in</span>
@@ -336,6 +680,43 @@ export default function TryTrainer() {
                 </div>
               ))}
             </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="font-mono text-xs text-muted">
+                Best ever: <span className="text-bone">{bestEver}</span>
+                <span className="mx-2 text-white/15">·</span>
+                Total reps: <span className="text-bone">{reps}</span>
+              </span>
+              {badges.length > 0 && (
+                <div className="flex items-center gap-1.5" aria-label="Earned badges">
+                  {badges.map((b) => (
+                    <span key={b} title={BADGES[b].title} aria-label={BADGES[b].title} className="text-xl leading-none">
+                      {BADGES[b].emoji}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* deposit CTA bridge — appears after 3 wins this session */}
+            {ctaShown && !ctaDismissed && (
+              <div className="relative rounded-2xl border border-ember/40 bg-gradient-to-br from-ember/15 to-ink-800 p-5">
+                <button
+                  onClick={() => {
+                    setCtaDismissed(true);
+                    setCtaShown(false);
+                  }}
+                  aria-label="Dismiss founding-access offer"
+                  className="absolute right-3 top-3 text-muted hover:text-bone"
+                >
+                  ✕
+                </button>
+                <p className="pr-6 text-bone">🎉 Your pup&apos;s a natural — lock founding access, $6/mo for life</p>
+                <CheckoutButton className="mt-3 inline-flex rounded-full bg-ember px-5 py-2 text-sm font-semibold text-ink-900 hover:bg-ember-300">
+                  Lock founding access →
+                </CheckoutButton>
+              </div>
+            )}
           </>
         ) : (
           <div className="rounded-2xl border border-white/10 bg-ink-800/50 p-6">
@@ -358,6 +739,31 @@ export default function TryTrainer() {
                       <span className="w-10 text-right font-mono text-xs text-muted">{Math.round(upVerdict.scores[i] * 100)}%</span>
                     </div>
                   ))}
+                </div>
+                <div className="mt-5 flex flex-wrap items-center gap-2">
+                  <button
+                    onClick={clearUpload}
+                    aria-label="Try another photo"
+                    className="rounded-lg border border-ember/40 px-4 py-2 text-sm font-medium text-ember-300 hover:bg-ember/10"
+                  >
+                    ↻ Try another photo
+                  </button>
+                  <button
+                    onClick={() =>
+                      share(`GoodBoy says my dog is doing "${upVerdict.label}" (${Math.round(upVerdict.conf * 100)}%) 🐕`)
+                    }
+                    aria-label="Share this verdict"
+                    className="rounded-lg border border-white/15 px-4 py-2 text-sm text-bone hover:border-white/30"
+                  >
+                    {copied ? "✓ Copied!" : "🔗 Share"}
+                  </button>
+                  <button
+                    onClick={clearUpload}
+                    aria-label="Clear photo"
+                    className="ml-auto text-sm text-muted hover:text-bone"
+                  >
+                    Clear
+                  </button>
                 </div>
               </>
             ) : (

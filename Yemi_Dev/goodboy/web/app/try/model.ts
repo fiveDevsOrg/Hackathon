@@ -62,7 +62,22 @@ export async function loadModel(onProgress?: (frac: number) => void): Promise<vo
     const ort = await loadOrt();
     ortRef = ort;
 
-    const res = await fetch(MODEL_URL);
+    // Cache the 34MB model in Cache Storage so repeat visits load instantly.
+    let res: Response | null = null;
+    let cache: Cache | null = null;
+    try {
+      if (typeof caches !== "undefined") {
+        cache = await caches.open("gb-model-v1");
+        res = (await cache.match(MODEL_URL)) || null;
+      }
+    } catch {
+      /* cache unavailable -> network */
+    }
+    const fromCache = !!res;
+    if (!res) res = await fetch(MODEL_URL);
+    if (cache && !fromCache && res.ok) {
+      cache.put(MODEL_URL, res.clone()).catch(() => {});
+    }
     const total = Number(res.headers.get("content-length") || 0);
     const reader = res.body!.getReader();
     const chunks: Uint8Array[] = [];
