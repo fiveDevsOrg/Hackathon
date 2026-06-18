@@ -116,7 +116,13 @@ export default function Home() {
               <span className="font-medium text-bone">
                 state-of-the-art real-time vision model
               </span>{" "}
-              <span className="font-mono text-ember-300">(RF-DETR)</span>.
+              <Link
+                href="/tech"
+                className="font-mono text-ember-300 underline decoration-dotted underline-offset-2 hover:text-ember"
+              >
+                (RF-DETR)
+              </Link>
+              .
             </p>
             <div className="flex flex-wrap items-center justify-center gap-x-6 gap-y-2 font-mono text-[11px] uppercase tracking-[0.16em] text-muted/80">
               <span>On-device</span>
@@ -434,6 +440,12 @@ export default function Home() {
             <span className="ml-2 text-sm font-sans font-normal text-muted">
               · built for the fivedevs hackathon
             </span>
+            <Link
+              href="/tech"
+              className="ml-2 text-sm text-muted underline decoration-dotted underline-offset-2 hover:text-bone"
+            >
+              The tech
+            </Link>
           </div>
           <p className="text-center text-xs text-muted/80 sm:text-right">
             © {new Date().getFullYear()} GoodBoy. Treats not included. Always

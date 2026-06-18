@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { activeBackend, classify, loadModel, type Label } from "./model";
+import { activeBackend, classify, classifyAll, loadModel, type Detection, type Label } from "./model";
 import CheckoutButton from "../components/CheckoutButton";
 import { ev } from "../lib/analytics";
 
@@ -67,8 +67,22 @@ export default function TryTrainer() {
   const [upImg, setUpImg] = useState<string | null>(null);
   const [upVerdict, setUpVerdict] = useState<{ label: Label; conf: number; scores: number[] } | null>(null);
   const [upBusy, setUpBusy] = useState(false);
+  const [upDets, setUpDets] = useState<Detection[]>([]);
+
+  // RF-DETR showcase: live performance HUD + multi-dog count
+  const [perfMs, setPerfMs] = useState(0);
+  const [dogCount, setDogCount] = useState(0);
+
+  // auto-captured "best moment" proof (most recent success only)
+  const [proof, setProof] = useState<string | null>(null);
 
   const videoRef = useRef<HTMLVideoElement>(null);
+  // detection-box overlay canvases (camera + upload)
+  const camCanvasRef = useRef<HTMLCanvasElement>(null);
+  const upCanvasRef = useRef<HTMLCanvasElement>(null);
+  const upImgRef = useRef<HTMLImageElement>(null);
+  // latest live detections, read inside the rAF/timeout loop (avoid stale closure)
+  const detsRef = useRef<Detection[]>([]);
   const runningRef = useRef(false);
   const cmdRef = useRef<Label>("sit");
   const stableRef = useRef(0);
@@ -98,6 +112,159 @@ export default function TryTrainer() {
     },
     [voiceOn],
   );
+
+  // ----- detection-box overlay (Features 1 & 2) -----
+  // Draws RF-DETR's actual boxes over the media. Maps normalized boxes through
+  // the object-contain letterbox. `matchLabel` (camera mode) colors the box
+  // green when the detection equals the current command, ember otherwise.
+  const drawBoxes = useCallback(
+    (
+      canvas: HTMLCanvasElement | null,
+      media: HTMLVideoElement | HTMLImageElement | null,
+      dets: Detection[],
+      matchLabel: Label | null,
+    ) => {
+      if (!canvas || !media) return;
+      const rect = canvas.getBoundingClientRect();
+      const EW = rect.width;
+      const EH = rect.height;
+      if (EW < 1 || EH < 1) return;
+
+      // intrinsic media size
+      const mW = media instanceof HTMLVideoElement ? media.videoWidth : media.naturalWidth;
+      const mH = media instanceof HTMLVideoElement ? media.videoHeight : media.naturalHeight;
+
+      // size the backing store for crisp lines on HiDPI, clear each frame
+      const dpr = typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1;
+      if (canvas.width !== Math.round(EW * dpr) || canvas.height !== Math.round(EH * dpr)) {
+        canvas.width = Math.round(EW * dpr);
+        canvas.height = Math.round(EH * dpr);
+      }
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, EW, EH);
+      if (!mW || !mH || dets.length === 0) return;
+
+      // letterbox mapping (media uses object-contain)
+      const elemA = EW / EH;
+      const mediaA = mW / mH;
+      let dW: number, dH: number, oX: number, oY: number;
+      if (mediaA > elemA) {
+        dW = EW;
+        dH = EW / mediaA;
+        oX = 0;
+        oY = (EH - dH) / 2;
+      } else {
+        dH = EH;
+        dW = EH * mediaA;
+        oY = 0;
+        oX = (EW - dW) / 2;
+      }
+      const px = (nx: number) => oX + nx * dW;
+      const py = (ny: number) => oY + ny * dH;
+
+      for (const d of dets) {
+        const x1 = px(d.box[0]);
+        const y1 = py(d.box[1]);
+        const x2 = px(d.box[2]);
+        const y2 = py(d.box[3]);
+        const w = Math.max(0, x2 - x1);
+        const h = Math.max(0, y2 - y1);
+        const color = matchLabel && d.label === matchLabel ? "#3fb950" : "#ff6b35";
+
+        // 3px rounded rect
+        const r = Math.min(10, w / 2, h / 2);
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = color;
+        ctx.beginPath();
+        if (typeof ctx.roundRect === "function") {
+          ctx.roundRect(x1, y1, w, h, r);
+        } else {
+          ctx.moveTo(x1 + r, y1);
+          ctx.arcTo(x2, y1, x2, y2, r);
+          ctx.arcTo(x2, y2, x1, y2, r);
+          ctx.arcTo(x1, y2, x1, y1, r);
+          ctx.arcTo(x1, y1, x2, y1, r);
+          ctx.closePath();
+        }
+        ctx.stroke();
+
+        // label chip "SIT 92%" at top-left
+        const text = `${d.label.toUpperCase()} ${Math.round(d.conf * 100)}%`;
+        ctx.font = "600 12px ui-monospace, SFMono-Regular, Menlo, monospace";
+        const padX = 6;
+        const chipH = 18;
+        const tw = ctx.measureText(text).width;
+        const chipY = y1 - chipH >= 0 ? y1 - chipH : y1;
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        if (typeof ctx.roundRect === "function") {
+          ctx.roundRect(x1, chipY, tw + padX * 2, chipH, 4);
+          ctx.fill();
+        } else {
+          ctx.fillRect(x1, chipY, tw + padX * 2, chipH);
+        }
+        ctx.fillStyle = "#0d1117";
+        ctx.textBaseline = "middle";
+        ctx.fillText(text, x1 + padX, chipY + chipH / 2 + 0.5);
+      }
+    },
+    [],
+  );
+
+  // ----- auto-capture "best moment" (Feature 4) -----
+  // On a rep success, snapshot the live frame at native resolution with the
+  // winning box + a "✓ SIT" badge burned in. Returns a JPEG data URL.
+  const captureProof = useCallback((det: Detection, cmd: Label): string | null => {
+    const v = videoRef.current;
+    if (!v) return null;
+    const mW = v.videoWidth;
+    const mH = v.videoHeight;
+    if (!mW || !mH) return null;
+    const cv = document.createElement("canvas");
+    cv.width = mW;
+    cv.height = mH;
+    const ctx = cv.getContext("2d");
+    if (!ctx) return null;
+    try {
+      ctx.drawImage(v, 0, 0, mW, mH);
+    } catch {
+      return null;
+    }
+    // winning box in pixel space (det.box is normalized over the full frame)
+    const x1 = det.box[0] * mW;
+    const y1 = det.box[1] * mH;
+    const x2 = det.box[2] * mW;
+    const y2 = det.box[3] * mH;
+    const w = Math.max(0, x2 - x1);
+    const h = Math.max(0, y2 - y1);
+    const lw = Math.max(3, Math.round(mW / 160));
+    ctx.lineWidth = lw;
+    ctx.strokeStyle = "#3fb950";
+    ctx.strokeRect(x1, y1, w, h);
+
+    // "✓ SIT" badge at top-left of the box
+    const text = `✓ ${cmd.toUpperCase()}`;
+    const fontPx = Math.max(16, Math.round(mW / 28));
+    ctx.font = `700 ${fontPx}px ui-sans-serif, system-ui, sans-serif`;
+    const padX = fontPx * 0.5;
+    const chipH = fontPx * 1.5;
+    const tw = ctx.measureText(text).width;
+    const bx = x1;
+    const by = y1 - chipH >= 0 ? y1 - chipH : y1;
+    ctx.fillStyle = "#3fb950";
+    ctx.fillRect(bx, by, tw + padX * 2, chipH);
+    ctx.fillStyle = "#0d1117";
+    ctx.textBaseline = "middle";
+    ctx.fillText(text, bx + padX, by + chipH / 2);
+
+    try {
+      return cv.toDataURL("image/jpeg", 0.85);
+    } catch {
+      return null;
+    }
+  }, []);
 
   // ----- persisted state: hydrate once on mount -----
   useEffect(() => {
@@ -241,6 +408,27 @@ export default function TryTrainer() {
     [],
   );
 
+  // share the captured proof as an image file where supported, else fall back
+  // to the existing text share (Feature 4)
+  const shareProof = useCallback(async () => {
+    const text = `My dog just nailed it on GoodBoy 🐕 Try it free:`;
+    const dataUrl = proof;
+    if (dataUrl && typeof navigator !== "undefined" && navigator.canShare) {
+      try {
+        const blob = await (await fetch(dataUrl)).blob();
+        const file = new File([blob], "goodboy-proof.jpg", { type: "image/jpeg" });
+        if (navigator.canShare({ files: [file] })) {
+          ev("share_clicked");
+          await navigator.share({ files: [file], title: "GoodBoy", text, url: SHARE_URL });
+          return;
+        }
+      } catch {
+        /* file share unsupported or cancelled — fall back to text share */
+      }
+    }
+    await share(text);
+  }, [proof, share]);
+
   const ensureModel = useCallback(async () => {
     if (phase === "ready") return;
     setPhase("loading");
@@ -272,18 +460,36 @@ export default function TryTrainer() {
     const v = videoRef.current;
     if (v && v.readyState >= 2) {
       try {
-        const r = await classify(v);
-        setSeeing({ label: r.label, conf: r.conf });
-        const seesDog = r.conf >= NODOG_CONF;
-        setNoDog(!seesDog);
-
         // sensitivity-driven thresholds, read from a ref so mid-session
         // changes take effect immediately (no stale closure)
         const { conf: matchConf, stable: needStable } = SENSITIVITY[sensRef.current];
 
+        // One inference returns ALL confident detections (Feature 2). The
+        // matchable threshold (min over no-dog floor & match conf) keeps the
+        // box overlay populated while never relaxing the scoring gate below.
+        const matchableThreshold = Math.min(NODOG_CONF, matchConf);
+        const { dets, ms } = await classifyAll(v, matchableThreshold);
+
+        // live performance HUD (Feature 3)
+        setPerfMs(ms);
+
+        // draw every detection box over the live video (Features 1 & 2)
+        detsRef.current = dets;
+        setDogCount(dets.length);
+        drawBoxes(camCanvasRef.current, v, dets, cmdRef.current);
+
+        // highest-confidence detection drives the existing scoring/verify logic
+        const top = dets[0];
+        const r = top
+          ? { label: top.label, conf: top.conf }
+          : { label: cmdRef.current, conf: 0 };
+        setSeeing(top ? { label: top.label, conf: top.conf } : null);
+        const seesDog = !!top && top.conf >= NODOG_CONF;
+        setNoDog(!seesDog);
+
         // once-per-visit "first_verdict" — the first frame we actually
         // produce a confident read counts as the camera's first verdict
-        if (!firstVerdictRef.current) {
+        if (!firstVerdictRef.current && top) {
           firstVerdictRef.current = true;
           ev("first_verdict", { mode: "camera" });
         }
@@ -295,8 +501,11 @@ export default function TryTrainer() {
         }
         setStable(stableRef.current);
 
-        if (stableRef.current >= needStable) {
-          // success
+        if (stableRef.current >= needStable && top) {
+          // success — capture the winning frame as proof (Feature 4)
+          const shot = captureProof(top, cmdRef.current);
+          if (shot) setProof(shot);
+
           setScore((s) => s + 1);
           streakRef.current += 1;
           setStreak(streakRef.current);
@@ -350,7 +559,7 @@ export default function TryTrainer() {
     }
     // throttle (~4/s) — gives mobile GC room and avoids memory-pressure crashes
     if (runningRef.current) setTimeout(() => loop(), 240);
-  }, [pickCommand, say, awardBadge, cueSuccess, cueMiss]);
+  }, [pickCommand, say, awardBadge, cueSuccess, cueMiss, drawBoxes, captureProof]);
 
   const start = useCallback(async () => {
     setErr(null);
@@ -382,6 +591,9 @@ export default function TryTrainer() {
     setScore(0);
     setStreak(0);
     streakRef.current = 0;
+    setProof(null);
+    setDogCount(0);
+    detsRef.current = [];
     sessionWinsRef.current = 0;
     setSessionWins(0);
     setCtaShown(false);
@@ -412,6 +624,7 @@ export default function TryTrainer() {
     async (file: File) => {
       setUpBusy(true);
       setUpVerdict(null);
+      setUpDets([]);
       const url = URL.createObjectURL(file);
       setUpImg(url);
       try {
@@ -421,6 +634,9 @@ export default function TryTrainer() {
         await img.decode();
         const r = await classify(img);
         setUpVerdict(r);
+        // all confident detections for box overlay + multi-dog listing
+        const { dets } = await classifyAll(img, NODOG_CONF);
+        setUpDets(dets);
         if (!firstVerdictRef.current) {
           firstVerdictRef.current = true;
           ev("first_verdict", { mode: "upload" });
@@ -441,6 +657,7 @@ export default function TryTrainer() {
       return null;
     });
     setUpVerdict(null);
+    setUpDets([]);
     setErr(null);
   }, []);
 
@@ -458,6 +675,34 @@ export default function TryTrainer() {
   useEffect(() => {
     if (sessionWins >= 3 && !ctaDismissed) setCtaShown(true);
   }, [sessionWins, ctaDismissed]);
+
+  // redraw the upload box overlay when its detections / image change.
+  // Two rAFs let the <img> lay out (naturalWidth + clientRect settle) first.
+  useEffect(() => {
+    if (mode !== "upload" || !upImg) return;
+    let raf2 = 0;
+    const raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(() => {
+        drawBoxes(upCanvasRef.current, upImgRef.current, upDets, null);
+      });
+    });
+    return () => {
+      cancelAnimationFrame(raf1);
+      cancelAnimationFrame(raf2);
+    };
+  }, [mode, upImg, upDets, drawBoxes]);
+
+  // keep both overlays aligned through layout/orientation changes by
+  // redrawing from refs (no per-frame state needed)
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const onResize = () => {
+      drawBoxes(camCanvasRef.current, videoRef.current, detsRef.current, cmdRef.current);
+      drawBoxes(upCanvasRef.current, upImgRef.current, upDets, null);
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [drawBoxes, upDets]);
 
   const suggestion = noDog
     ? "Point the camera at your dog (whole body in frame)."
@@ -514,6 +759,27 @@ export default function TryTrainer() {
             <>
               {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
               <video ref={videoRef} playsInline muted className="h-full w-full object-contain" />
+              {/* RF-DETR detection boxes (Features 1 & 2) */}
+              <canvas
+                ref={camCanvasRef}
+                className="pointer-events-none absolute inset-0 h-full w-full"
+                aria-hidden="true"
+              />
+              {/* live performance HUD (Feature 3) + multi-dog count (Feature 2) */}
+              {running && (
+                <div className="pointer-events-none absolute left-2 top-2 flex flex-col items-start gap-1">
+                  {perfMs > 0 && (
+                    <span className="rounded-md bg-black/55 px-2 py-1 font-mono text-[10px] leading-none text-muted backdrop-blur-sm">
+                      {Math.round(perfMs)}ms · {Math.round(1000 / perfMs)} fps · {engine || "—"} · 384²
+                    </span>
+                  )}
+                  {dogCount > 1 && (
+                    <span className="rounded-md bg-black/55 px-2 py-1 font-mono text-[10px] leading-none text-ember-300 backdrop-blur-sm">
+                      🐕×{dogCount} detected
+                    </span>
+                  )}
+                </div>
+              )}
               {flash && (
                 <div
                   className="gb-flash absolute inset-0 grid place-items-center text-[120px]"
@@ -540,8 +806,22 @@ export default function TryTrainer() {
           ) : (
             <div className="grid h-full place-items-center p-4">
               {upImg ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img src={upImg} alt="your dog" className="max-h-full max-w-full rounded-lg object-contain" />
+                <div className="relative inline-flex max-h-full max-w-full">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    ref={upImgRef}
+                    src={upImg}
+                    alt="your dog"
+                    onLoad={() => drawBoxes(upCanvasRef.current, upImgRef.current, upDets, null)}
+                    className="max-h-full max-w-full rounded-lg object-contain"
+                  />
+                  {/* RF-DETR detection boxes over the uploaded photo (Features 1 & 2) */}
+                  <canvas
+                    ref={upCanvasRef}
+                    className="pointer-events-none absolute inset-0 h-full w-full"
+                    aria-hidden="true"
+                  />
+                </div>
               ) : (
                 <label className="cursor-pointer rounded-xl border border-dashed border-white/20 px-8 py-12 text-center text-muted hover:border-ember/40">
                   <input
@@ -698,6 +978,38 @@ export default function TryTrainer() {
               )}
             </div>
 
+            {/* auto-captured "best moment" proof (Feature 4) */}
+            {proof && (
+              <div className="flex items-center gap-3 rounded-2xl border border-leaf/30 bg-ink-800/50 p-3">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={proof}
+                  alt="Captured proof of your dog's last correct rep"
+                  className="max-h-[140px] w-auto rounded-lg border border-white/10"
+                  style={{ maxWidth: 140 }}
+                />
+                <div className="flex flex-col gap-2">
+                  <span className="font-mono text-[10px] uppercase tracking-wider text-leaf">📸 Proof</span>
+                  <div className="flex flex-wrap gap-2">
+                    <a
+                      download="goodboy-proof.jpg"
+                      href={proof}
+                      className="rounded-lg border border-white/15 px-3 py-1.5 text-sm text-bone hover:border-white/30"
+                    >
+                      ⬇ Save
+                    </a>
+                    <button
+                      onClick={() => shareProof()}
+                      aria-label="Share your proof photo"
+                      className="rounded-lg border border-white/15 px-3 py-1.5 text-sm text-bone hover:border-white/30"
+                    >
+                      {copied ? "✓ Copied!" : "🔗 Share"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
             {/* deposit CTA bridge — appears after 3 wins this session */}
             {ctaShown && !ctaDismissed && (
               <div className="relative rounded-2xl border border-ember/40 bg-gradient-to-br from-ember/15 to-ink-800 p-5">
@@ -724,11 +1036,25 @@ export default function TryTrainer() {
               <p className="text-center text-muted">Analyzing…</p>
             ) : upVerdict ? (
               <>
-                <div className="text-center">
-                  <div className="font-mono text-xs uppercase tracking-[0.16em] text-ember-300">GoodBoy says</div>
-                  <div className="my-1 font-display text-5xl font-extrabold text-bone">{upVerdict.label.toUpperCase()}</div>
-                  <div className="text-muted">{Math.round(upVerdict.conf * 100)}% confident</div>
-                </div>
+                {upDets.length > 1 ? (
+                  // multiple dogs detected (Feature 2): list each
+                  <div className="text-center">
+                    <div className="font-mono text-xs uppercase tracking-[0.16em] text-ember-300">
+                      🐕×{upDets.length} detected
+                    </div>
+                    <p className="mt-2 text-bone">
+                      {upDets
+                        .map((d, i) => `Dog ${i + 1}: ${d.label} ${Math.round(d.conf * 100)}%`)
+                        .join(" · ")}
+                    </p>
+                  </div>
+                ) : (
+                  <div className="text-center">
+                    <div className="font-mono text-xs uppercase tracking-[0.16em] text-ember-300">GoodBoy says</div>
+                    <div className="my-1 font-display text-5xl font-extrabold text-bone">{upVerdict.label.toUpperCase()}</div>
+                    <div className="text-muted">{Math.round(upVerdict.conf * 100)}% confident</div>
+                  </div>
+                )}
                 <div className="mt-5 space-y-2">
                   {COMMANDS.map((c, i) => (
                     <div key={c} className="flex items-center gap-3">

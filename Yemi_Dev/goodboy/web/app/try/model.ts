@@ -11,7 +11,9 @@ const MODEL_URL = "/model/rfdetr-nano-int8.onnx";
 const ORT_VER = "1.26.0";
 const ORT_BASE = `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ORT_VER}/dist/`;
 
-export type Verdict = { label: Label; conf: number; scores: number[] };
+export type Box = [number, number, number, number]; // x1,y1,x2,y2 normalized 0..1
+export type Verdict = { label: Label; conf: number; scores: number[]; box: Box; ms: number };
+export type Detection = { label: Label; conf: number; box: Box };
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 declare global {
@@ -145,32 +147,70 @@ export function preprocess(src: CanvasImageSource): Float32Array {
   return out;
 }
 
-export async function classify(src: CanvasImageSource): Promise<Verdict> {
+const sig = (x: number) => 1 / (1 + Math.exp(-x));
+
+// dets are [cx,cy,w,h] normalized -> [x1,y1,x2,y2] normalized, clamped
+function toBox(dets: Float32Array, q: number): Box {
+  const cx = dets[q * 4], cy = dets[q * 4 + 1], w = dets[q * 4 + 2], h = dets[q * 4 + 3];
+  const cl = (v: number) => Math.max(0, Math.min(1, v));
+  return [cl(cx - w / 2), cl(cy - h / 2), cl(cx + w / 2), cl(cy + h / 2)];
+}
+
+async function runModel(src: CanvasImageSource) {
   if (!sessionPromise || !ortRef) throw new Error("model not loaded");
   const session = await sessionPromise;
   const tensor = new ortRef.Tensor("float32", preprocess(src), [1, 3, SIZE, SIZE]);
+  const t0 = performance.now();
   const out = await session.run({ [session.inputNames[0]]: tensor });
-  const labelsT = out["labels"];
-  const labels = labelsT.data as Float32Array;
-  const C = labelsT.dims[2];
-  const sig = (x: number) => 1 / (1 + Math.exp(-x));
+  const ms = performance.now() - t0;
+  // copy out before disposing the tensors (frees backing buffers, esp. GPU)
+  const labels = (out["labels"].data as Float32Array).slice();
+  const C = out["labels"].dims[2] as number;
+  const dets = (out["dets"].data as Float32Array).slice();
+  for (const k in out) (out[k] as { dispose?: () => void })?.dispose?.();
+  (tensor as { dispose?: () => void })?.dispose?.();
+  return { labels, dets, C, ms };
+}
 
-  let bestQ = 0,
-    bestC = 0,
-    best = -1;
+export async function classify(src: CanvasImageSource): Promise<Verdict> {
+  const { labels, dets, C, ms } = await runModel(src);
+  let bestQ = 0, bestC = 0, best = -1;
   for (let q = 0; q < 300; q++) {
     for (let c = 0; c < 3; c++) {
       const s = sig(labels[q * C + c]);
-      if (s > best) {
-        best = s;
-        bestQ = q;
-        bestC = c;
-      }
+      if (s > best) { best = s; bestQ = q; bestC = c; }
     }
   }
   const scores = [0, 1, 2].map((c) => sig(labels[bestQ * C + c]));
-  // free input + output backing buffers so memory stays flat across the loop
-  for (const k in out) (out[k] as { dispose?: () => void })?.dispose?.();
-  (tensor as { dispose?: () => void })?.dispose?.();
-  return { label: LABELS[bestC], conf: best, scores };
+  return { label: LABELS[bestC], conf: best, scores, box: toBox(dets, bestQ), ms };
+}
+
+// All confident detections (NMS-free) -> multi-dog. Dedups near-identical boxes.
+export async function classifyAll(
+  src: CanvasImageSource,
+  threshold = 0.5,
+  max = 6,
+): Promise<{ dets: Detection[]; ms: number }> {
+  const { labels, dets, C, ms } = await runModel(src);
+  const found: Detection[] = [];
+  for (let q = 0; q < 300; q++) {
+    let bc = 0, bs = -1;
+    for (let c = 0; c < 3; c++) {
+      const s = sig(labels[q * C + c]);
+      if (s > bs) { bs = s; bc = c; }
+    }
+    if (bs >= threshold) found.push({ label: LABELS[bc], conf: bs, box: toBox(dets, q) });
+  }
+  found.sort((a, b) => b.conf - a.conf);
+  const kept: Detection[] = [];
+  for (const d of found) {
+    const cx = (d.box[0] + d.box[2]) / 2, cy = (d.box[1] + d.box[3]) / 2;
+    const dup = kept.some((k) => {
+      const kx = (k.box[0] + k.box[2]) / 2, ky = (k.box[1] + k.box[3]) / 2;
+      return Math.abs(kx - cx) < 0.08 && Math.abs(ky - cy) < 0.08;
+    });
+    if (!dup) kept.push(d);
+    if (kept.length >= max) break;
+  }
+  return { dets: kept, ms };
 }
