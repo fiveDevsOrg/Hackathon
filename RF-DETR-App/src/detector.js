@@ -1,16 +1,26 @@
+import {
+  FaceDetector,
+  FilesetResolver
+} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/vision_bundle.mjs";
+
 export async function createDetector() {
-  const framingDetector = createFramingDetector();
   const rfDetr = await tryCreateRfDetrDetector();
 
   if (rfDetr) {
     return rfDetr;
   }
 
-  if ("FaceDetector" in window) {
-    return createFaceDetector(framingDetector);
+  const mediaPipeDetector = await tryCreateMediaPipeDetector();
+
+  if (mediaPipeDetector) {
+    return mediaPipeDetector;
   }
 
-  return framingDetector;
+  if ("FaceDetector" in window) {
+    return createNativeFaceDetector();
+  }
+
+  return createNoopDetector();
 }
 
 async function tryCreateRfDetrDetector() {
@@ -41,20 +51,63 @@ async function tryCreateRfDetrDetector() {
   };
 }
 
-function createFaceDetector(fallbackDetector) {
+async function tryCreateMediaPipeDetector() {
+  try {
+    const vision = await FilesetResolver.forVisionTasks(
+      "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/wasm"
+    );
+    const faceDetector = await FaceDetector.createFromOptions(vision, {
+      baseOptions: {
+        modelAssetPath: "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/latest/blaze_face_short_range.tflite",
+        delegate: "GPU"
+      },
+      runningMode: "VIDEO",
+      minDetectionConfidence: 0.45
+    });
+
+    return {
+      label: "MediaPipe face",
+      async detect(video, canvas) {
+        if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+          return [];
+        }
+
+        const result = faceDetector.detectForVideo(video, performance.now());
+        const scale = getObjectFitScale(video, canvas);
+
+        return result.detections.map((detection) => {
+          const faceBox = scaleMediaPipeBox(detection.boundingBox, scale);
+          const upperBodyBox = expandFaceToUpperBody(faceBox, canvas);
+          const score = detection.categories?.[0]?.score ?? 0.75;
+
+          return {
+            label: "head + shoulders",
+            score,
+            box: upperBodyBox
+          };
+        });
+      }
+    };
+  } catch (error) {
+    console.warn("MediaPipe detector unavailable", error);
+    return null;
+  }
+}
+
+function createNativeFaceDetector() {
   const faceDetector = new window.FaceDetector({
     fastMode: true,
     maxDetectedFaces: 4
   });
 
   return {
-    label: "FaceDetector + guide",
+    label: "Native face",
     async detect(video, canvas) {
       const faces = await faceDetector.detect(video).catch(() => []);
       const scale = getObjectFitScale(video, canvas);
 
       if (!faces.length) {
-        return fallbackDetector.detect(video, canvas);
+        return [];
       }
 
       return faces.map((face) => {
@@ -71,27 +124,11 @@ function createFaceDetector(fallbackDetector) {
   };
 }
 
-function createFramingDetector() {
+function createNoopDetector() {
   return {
-    label: "Camera framing MVP",
-    async detect(video, canvas) {
-      if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
-        return [];
-      }
-
-      const width = canvas.width * 0.34;
-      const height = canvas.height * 0.48;
-
-      return [{
-        label: "framing guide",
-        score: 0.45,
-        box: {
-          x: (canvas.width - width) / 2,
-          y: canvas.height * 0.18,
-          width,
-          height
-        }
-      }];
+    label: "No detector",
+    async detect() {
+      return [];
     }
   };
 }
@@ -114,6 +151,15 @@ function scaleBox(box, scale) {
   return {
     x: box.x * scale.scale + scale.offsetX,
     y: box.y * scale.scale + scale.offsetY,
+    width: box.width * scale.scale,
+    height: box.height * scale.scale
+  };
+}
+
+function scaleMediaPipeBox(box, scale) {
+  return {
+    x: box.originX * scale.scale + scale.offsetX,
+    y: box.originY * scale.scale + scale.offsetY,
     width: box.width * scale.scale,
     height: box.height * scale.scale
   };

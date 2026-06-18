@@ -101,6 +101,7 @@ function drawDetections(detections) {
   for (const detection of detections) {
     const { x, y, width, height } = detection.box;
     const mirroredX = canvas.width - x - width;
+    const labelY = y > 28 ? y - 10 : y + 20;
 
     ctx.save();
     ctx.lineWidth = 3;
@@ -111,21 +112,49 @@ function drawDetections(detections) {
 
     ctx.fillStyle = "#35d07f";
     ctx.font = "600 14px Inter, system-ui, sans-serif";
-    ctx.fillText(`${detection.label} ${Math.round(detection.score * 100)}%`, mirroredX + 10, Math.max(22, y - 10));
+    ctx.fillText(`${detection.label} ${Math.round(detection.score * 100)}%`, mirroredX + 10, labelY);
 
-    drawShoulderLine(mirroredX, y, width, height);
+    drawUpperBodySkeleton(mirroredX, y, width, height);
     ctx.restore();
   }
 }
 
-function drawShoulderLine(x, y, width, height) {
+function drawUpperBodySkeleton(x, y, width, height) {
+  const head = {
+    x: x + width * 0.5,
+    y: y + height * 0.2,
+    radius: Math.max(16, Math.min(width, height) * 0.16)
+  };
+  const neck = { x: x + width * 0.5, y: y + height * 0.43 };
+  const leftShoulder = { x: x + width * 0.18, y: y + height * 0.62 };
+  const rightShoulder = { x: x + width * 0.82, y: y + height * 0.62 };
+  const torso = { x: x + width * 0.5, y: y + height * 0.88 };
   const shoulderY = y + height * 0.66;
-  ctx.beginPath();
-  ctx.moveTo(x + width * 0.12, shoulderY);
-  ctx.quadraticCurveTo(x + width * 0.5, shoulderY + height * 0.08, x + width * 0.88, shoulderY);
+
   ctx.strokeStyle = "#f5c84b";
+  ctx.fillStyle = "#f5c84b";
   ctx.lineWidth = 3;
+
+  ctx.beginPath();
+  ctx.arc(head.x, head.y, head.radius, 0, Math.PI * 2);
   ctx.stroke();
+
+  ctx.beginPath();
+  ctx.moveTo(head.x, head.y + head.radius);
+  ctx.lineTo(neck.x, neck.y);
+  ctx.lineTo(torso.x, torso.y);
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.moveTo(leftShoulder.x, shoulderY);
+  ctx.quadraticCurveTo(neck.x, shoulderY + height * 0.08, rightShoulder.x, shoulderY);
+  ctx.stroke();
+
+  for (const point of [neck, leftShoulder, rightShoulder, torso]) {
+    ctx.beginPath();
+    ctx.arc(point.x, point.y, 4, 0, Math.PI * 2);
+    ctx.fill();
+  }
 }
 
 function updateMetrics(detections) {
