@@ -208,12 +208,15 @@ class GestureWorkspace {
       this.lastTwoHandDistance = null;
     }
 
-    const swipe = primary ? detectSwipe(this.trails.get(primary.handedness), now) : null;
+    const swipe = primary && !pinch?.isPinching && !Number.isFinite(twoHandDistance)
+      ? detectSwipe(primary, this.trails.get(primary.handedness), this.canvas.width)
+      : null;
 
     if (swipe && now - this.lastSwipeAt > 650) {
       this.selectedIndex = wrapIndex(this.selectedIndex + (swipe === "right" ? 1 : -1), this.sandbox.length);
       this.lastSwipeAt = now;
       this.lastAction = swipe === "right" ? "Swipe right" : "Swipe left";
+      this.trails.set(primary.handedness, []);
     }
   }
 
@@ -295,7 +298,7 @@ class GestureWorkspace {
     this.ctx.fillStyle = "#c7d2df";
     this.ctx.font = "600 16px Inter, system-ui, sans-serif";
     this.ctx.textAlign = "center";
-    this.ctx.fillText("Pinch selected item to drag · Two hands zoom · Swipe changes selection", this.canvas.width / 2, this.canvas.height - 132);
+    this.ctx.fillText("Pinch to drag · Two hands zoom · Open-hand swipe changes selection", this.canvas.width / 2, this.canvas.height - 132);
     this.ctx.restore();
   }
 
@@ -422,19 +425,39 @@ function getTwoHandDistance(hands, canvasWidth) {
   );
 }
 
-function detectSwipe(trail, now) {
-  void now;
-
-  if (!trail || trail.length < 8) return null;
+function detectSwipe(hand, trail, canvasWidth) {
+  if (!isOpenHand(hand, canvasWidth) || !trail || trail.length < 8) return null;
 
   const newest = trail[0];
   const oldest = trail[Math.min(trail.length - 1, 10)];
   const dx = newest.x - oldest.x;
   const dy = Math.abs(newest.y - oldest.y);
+  const dt = Math.max(1, newest.t - oldest.t);
+  const speed = Math.abs(dx) / dt;
 
-  if (Math.abs(dx) < 120 || dy > 90) return null;
+  if (Math.abs(dx) < 170 || dy > 70 || speed < 0.85) return null;
 
   return dx > 0 ? "right" : "left";
+}
+
+function isOpenHand(hand, canvasWidth) {
+  const wrist = getPoint(hand, 0);
+  const thumb = getPoint(hand, 4);
+  const index = getPoint(hand, 8);
+  const middle = getPoint(hand, 12);
+  const ring = getPoint(hand, 16);
+  const pinky = getPoint(hand, 20);
+
+  if (!wrist || !thumb || !index || !middle || !ring || !pinky) return false;
+
+  const wristPoint = { x: canvasWidth - wrist.x, y: wrist.y };
+  const fingertips = [thumb, index, middle, ring, pinky]
+    .map((point) => ({ x: canvasWidth - point.x, y: point.y }));
+  const averageSpread = fingertips
+    .reduce((total, point) => total + distance(point, wristPoint), 0) / fingertips.length;
+  const pinch = getPinch(hand, canvasWidth);
+
+  return averageSpread > 95 && pinch && pinch.distance > 64;
 }
 
 function loadSamples() {
