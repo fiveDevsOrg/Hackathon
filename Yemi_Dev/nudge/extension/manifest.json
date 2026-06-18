@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "Nudge — AI guided overlay",
+  "version": "0.1.0",
+  "description": "An AI guided-overlay copilot that points at what to click next on any website. Click the toolbar icon, type a task, and follow the ghost cursor.",
+  "action": {
+    "default_title": "Nudge — click to guide me on this page"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "permissions": ["activeTab", "scripting"],
+  "host_permissions": ["https://nudge-sooty.vercel.app/*"]
+}
