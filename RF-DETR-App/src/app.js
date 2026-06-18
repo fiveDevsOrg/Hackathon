@@ -1,4 +1,4 @@
-import { createDetector } from "./detector.js?v=6c146a3";
+import { createDetector } from "./detector.js?v=pose-landmarker-1";
 
 const video = document.querySelector("#camera");
 const canvas = document.querySelector("#overlay");
@@ -114,47 +114,65 @@ function drawDetections(detections) {
     ctx.font = "600 14px Inter, system-ui, sans-serif";
     ctx.fillText(`${detection.label} ${Math.round(detection.score * 100)}%`, mirroredX + 10, labelY);
 
-    drawUpperBodySkeleton(mirroredX, y, width, height);
+    if (detection.landmarks?.length) {
+      drawPoseLandmarks(detection.landmarks);
+    }
+
     ctx.restore();
   }
 }
 
-function drawUpperBodySkeleton(x, y, width, height) {
-  const head = {
-    x: x + width * 0.5,
-    y: y + height * 0.2,
-    radius: Math.max(16, Math.min(width, height) * 0.16)
-  };
-  const neck = { x: x + width * 0.5, y: y + height * 0.43 };
-  const leftShoulder = { x: x + width * 0.18, y: y + height * 0.62 };
-  const rightShoulder = { x: x + width * 0.82, y: y + height * 0.62 };
-  const torso = { x: x + width * 0.5, y: y + height * 0.88 };
-  const shoulderY = y + height * 0.66;
+function drawPoseLandmarks(landmarks) {
+  const points = new Map(
+    landmarks.map((landmark) => [
+      landmark.index,
+      {
+        x: canvas.width - landmark.x,
+        y: landmark.y,
+        visibility: landmark.visibility
+      }
+    ])
+  );
+  const connections = [
+    [7, 5], [5, 3], [3, 1], [1, 0], [0, 2], [2, 4], [4, 6], [6, 8],
+    [9, 10],
+    [11, 12], [11, 13], [13, 15], [12, 14], [14, 16],
+    [11, 23], [12, 24], [23, 24]
+  ];
 
   ctx.strokeStyle = "#f5c84b";
   ctx.fillStyle = "#f5c84b";
-  ctx.lineWidth = 3;
+  ctx.lineWidth = 4;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
 
-  ctx.beginPath();
-  ctx.arc(head.x, head.y, head.radius, 0, Math.PI * 2);
-  ctx.stroke();
+  for (const [startIndex, endIndex] of connections) {
+    const start = points.get(startIndex);
+    const end = points.get(endIndex);
 
-  ctx.beginPath();
-  ctx.moveTo(head.x, head.y + head.radius);
-  ctx.lineTo(neck.x, neck.y);
-  ctx.lineTo(torso.x, torso.y);
-  ctx.stroke();
+    if (!isVisiblePoint(start) || !isVisiblePoint(end)) {
+      continue;
+    }
 
-  ctx.beginPath();
-  ctx.moveTo(leftShoulder.x, shoulderY);
-  ctx.quadraticCurveTo(neck.x, shoulderY + height * 0.08, rightShoulder.x, shoulderY);
-  ctx.stroke();
-
-  for (const point of [neck, leftShoulder, rightShoulder, torso]) {
     ctx.beginPath();
-    ctx.arc(point.x, point.y, 4, 0, Math.PI * 2);
+    ctx.moveTo(start.x, start.y);
+    ctx.lineTo(end.x, end.y);
+    ctx.stroke();
+  }
+
+  for (const point of points.values()) {
+    if (!isVisiblePoint(point)) {
+      continue;
+    }
+
+    ctx.beginPath();
+    ctx.arc(point.x, point.y, 5, 0, Math.PI * 2);
     ctx.fill();
   }
+}
+
+function isVisiblePoint(point) {
+  return point && point.visibility >= 0.35;
 }
 
 function updateMetrics(detections) {

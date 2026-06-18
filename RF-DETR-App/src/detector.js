@@ -1,6 +1,7 @@
 import {
   FaceDetector,
-  FilesetResolver
+  FilesetResolver,
+  PoseLandmarker
 } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/vision_bundle.mjs";
 
 export async function createDetector() {
@@ -10,10 +11,16 @@ export async function createDetector() {
     return rfDetr;
   }
 
-  const mediaPipeDetector = await tryCreateMediaPipeDetector();
+  const poseDetector = await tryCreatePoseDetector();
 
-  if (mediaPipeDetector) {
-    return mediaPipeDetector;
+  if (poseDetector) {
+    return poseDetector;
+  }
+
+  const faceDetector = await tryCreateMediaPipeFaceDetector();
+
+  if (faceDetector) {
+    return faceDetector;
   }
 
   if ("FaceDetector" in window) {
@@ -51,7 +58,50 @@ async function tryCreateRfDetrDetector() {
   };
 }
 
-async function tryCreateMediaPipeDetector() {
+async function tryCreatePoseDetector() {
+  try {
+    const vision = await FilesetResolver.forVisionTasks(
+      "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/wasm"
+    );
+    const poseLandmarker = await createPoseLandmarkerWithDelegate(vision, "GPU")
+      .catch(() => createPoseLandmarkerWithDelegate(vision, "CPU"));
+
+    return {
+      label: "MediaPipe pose",
+      async detect(video, canvas) {
+        if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+          return [];
+        }
+
+        const result = poseLandmarker.detectForVideo(video, performance.now());
+        const scale = getObjectFitScale(video, canvas);
+
+        return result.landmarks
+          .map((landmarks) => createPoseDetection(landmarks, scale, canvas))
+          .filter(Boolean);
+      }
+    };
+  } catch (error) {
+    console.warn("MediaPipe pose detector unavailable", error);
+    return null;
+  }
+}
+
+function createPoseLandmarkerWithDelegate(vision, delegate) {
+  return PoseLandmarker.createFromOptions(vision, {
+    baseOptions: {
+      modelAssetPath: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task",
+      delegate
+    },
+    runningMode: "VIDEO",
+    numPoses: 1,
+    minPoseDetectionConfidence: 0.45,
+    minPosePresenceConfidence: 0.45,
+    minTrackingConfidence: 0.45
+  });
+}
+
+async function tryCreateMediaPipeFaceDetector() {
   try {
     const vision = await FilesetResolver.forVisionTasks(
       "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/wasm"
@@ -124,6 +174,45 @@ function createNativeFaceDetector() {
   };
 }
 
+function createPoseDetection(landmarks, scale, canvas) {
+  const upperBodyIndexes = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 23, 24];
+  const points = landmarks
+    .map((landmark, index) => ({
+      index,
+      x: landmark.x * scale.sourceWidth * scale.scale + scale.offsetX,
+      y: landmark.y * scale.sourceHeight * scale.scale + scale.offsetY,
+      visibility: landmark.visibility ?? landmark.presence ?? 1
+    }))
+    .filter((point) => point.visibility >= 0.35);
+  const upperBodyPoints = points.filter((point) => upperBodyIndexes.includes(point.index));
+
+  if (upperBodyPoints.length < 4) {
+    return null;
+  }
+
+  const xs = upperBodyPoints.map((point) => point.x);
+  const ys = upperBodyPoints.map((point) => point.y);
+  const paddingX = canvas.width * 0.035;
+  const paddingY = canvas.height * 0.045;
+  const minX = clamp(Math.min(...xs) - paddingX, 0, canvas.width);
+  const maxX = clamp(Math.max(...xs) + paddingX, 0, canvas.width);
+  const minY = clamp(Math.min(...ys) - paddingY, 0, canvas.height);
+  const maxY = clamp(Math.max(...ys) + paddingY, 0, canvas.height);
+  const score = upperBodyPoints.reduce((total, point) => total + point.visibility, 0) / upperBodyPoints.length;
+
+  return {
+    label: "pose landmarks",
+    score,
+    box: {
+      x: minX,
+      y: minY,
+      width: maxX - minX,
+      height: maxY - minY
+    },
+    landmarks: points
+  };
+}
+
 function createNoopDetector() {
   return {
     label: "No detector",
@@ -142,6 +231,8 @@ function getObjectFitScale(video, canvas) {
 
   return {
     scale,
+    sourceWidth: video.videoWidth,
+    sourceHeight: video.videoHeight,
     offsetX: (canvas.width - video.videoWidth * scale) / 2,
     offsetY: (canvas.height - video.videoHeight * scale) / 2
   };
