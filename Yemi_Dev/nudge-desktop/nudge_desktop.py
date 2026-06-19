@@ -55,6 +55,15 @@ TARGET_W = 1280         # screenshot downscale width sent to the model
 DEBOUNCE_MS = 750       # let the UI settle after a click before re-planning
 HERE = os.path.dirname(os.path.abspath(__file__))
 
+# ---- auto-advance watcher tuning ------------------------------------------
+WATCH_MS = 450          # how often to sample the region around the target
+WATCH_CHANGE = 0.18     # fraction of the region that must differ vs the
+                        # baseline to count as "the user did something"
+                        # (low enough to catch a menu/app opening, high
+                        #  enough to ignore a hover highlight)
+WATCH_SETTLE = 0.06     # once changed, advance only when consecutive frames
+                        # are this close -- i.e. the screen stopped moving
+
 
 # ===========================================================================
 # UIA scan -- lifted from poc_uia.py, returns a flat list of marks
@@ -255,6 +264,61 @@ def grab_screen(mon_index=1):
     except Exception:
         traceback.print_exc()
         return None, None, 1.0
+
+
+# ===========================================================================
+# Auto-advance watcher -- detect that the user completed the current step by
+# watching the foreground window + a tiny fingerprint of the screen region
+# around the element we're pointing at. Pure Win32 + a small mss grab; cheap
+# enough to run on a 450ms QTimer on the main thread.
+# ===========================================================================
+def _fg_hwnd():
+    """The foreground window handle (pure Win32, no COM)."""
+    try:
+        import ctypes
+        return int(ctypes.windll.user32.GetForegroundWindow())
+    except Exception:
+        return 0
+
+
+def region_hash(rect, pad=44, cells=24):
+    """A tiny grayscale fingerprint (bytes, cells*cells) of the screen area
+    around `rect` (absolute screen px), or None. Region is padded so a hover
+    highlight on the element alone doesn't dominate the diff.
+    """
+    try:
+        import mss
+        from PIL import Image
+        x, y, w, h = rect
+        left, top = int(x - pad), int(y - pad)
+        width, height = int(w + pad * 2), int(h + pad * 2)
+        with mss.mss() as sct:
+            vb = sct.monitors[0]  # bounding box of all monitors
+            # clamp to the virtual desktop so mss never grabs out of bounds
+            l2 = max(vb["left"], left)
+            t2 = max(vb["top"], top)
+            r2 = min(vb["left"] + vb["width"], left + width)
+            b2 = min(vb["top"] + vb["height"], top + height)
+            if r2 - l2 < 8 or b2 - t2 < 8:
+                return None
+            shot = sct.grab({"left": l2, "top": t2, "width": r2 - l2, "height": b2 - t2})
+            img = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
+        return img.convert("L").resize((cells, cells)).tobytes()
+    except Exception:
+        return None
+
+
+def hash_diff(a, b, tol=24):
+    """Fraction (0..1) of fingerprint cells that differ by more than `tol`.
+    Returns 1.0 (treat as fully changed) if either is missing or shapes differ.
+    """
+    if not a or not b or len(a) != len(b):
+        return 1.0
+    d = 0
+    for ca, cb in zip(a, b):
+        if abs(ca - cb) > tol:
+            d += 1
+    return d / float(len(a))
 
 
 # ===========================================================================
@@ -611,6 +675,17 @@ class ControlBar(QtWidgets.QWidget):
         self._debounce.setInterval(DEBOUNCE_MS)
         self._debounce.timeout.connect(self._advance)
 
+        # auto-advance: watch the screen near the target and move on when the
+        # user completes the step (click OR keyboard OR anything), so we don't
+        # depend on catching a mouse click.
+        self.auto_advance = True
+        self._pending = False      # a progress event is queued; ignore others
+        self._watch_base = None    # (fg_hwnd, region_hash) when we pointed
+        self._watch_prev = None    # previous tick's region hash
+        self._watcher = QtCore.QTimer(self)
+        self._watcher.setInterval(WATCH_MS)
+        self._watcher.timeout.connect(self._watch_tick)
+
         self._build_ui()
 
     # ---- UI ---------------------------------------------------------------
@@ -660,8 +735,15 @@ class ControlBar(QtWidgets.QWidget):
         self.screen_combo.setObjectName("screens")
         self._populate_screens()
         self.screen_combo.currentIndexChanged.connect(self._on_screen_changed)
+        self.auto_chk = QtWidgets.QCheckBox("Auto-advance")
+        self.auto_chk.setObjectName("autochk")
+        self.auto_chk.setChecked(True)
+        self.auto_chk.setToolTip("Move to the next step automatically when the "
+                                 "screen changes (no click needed).")
+        self.auto_chk.toggled.connect(self._on_auto_toggled)
         srow.addWidget(slab)
         srow.addWidget(self.screen_combo, 1)
+        srow.addWidget(self.auto_chk)
         lay.addLayout(srow)
 
         self.status = QtWidgets.QLabel("Type a task and press Guide. I point, you click.")
@@ -689,6 +771,10 @@ class ControlBar(QtWidgets.QWidget):
                        border-radius: 7px; padding: 3px 8px; font: 11px 'Segoe UI'; }
             #screens QAbstractItemView { background: #15130f; color: #F4F2EC;
                        selection-background-color: #FF6B35; selection-color: #0E0D0C; }
+            #autochk { color: #b9b2a8; font: 11px 'Segoe UI'; spacing: 6px; }
+            #autochk::indicator { width: 14px; height: 14px; border-radius: 4px;
+                       border: 1px solid #3a3530; background: #0E0D0C; }
+            #autochk::indicator:checked { background: #FF6B35; border: 1px solid #FF6B35; }
             """
         )
 
@@ -753,6 +839,9 @@ class ControlBar(QtWidgets.QWidget):
         self.history = []
         self.step = 0
         self.guiding = True
+        self._pending = False
+        self._watch_base = None
+        self._watch_prev = None
         self.bridge.start()
         _dbg("on_guide: started task=%r" % task)
         self.status.setText("Looking at your screen...")
@@ -761,28 +850,89 @@ class ControlBar(QtWidgets.QWidget):
     def on_stop(self):
         self.guiding = False
         self._debounce.stop()
+        self._watcher.stop()
         self.bridge.stop()
         self.overlay.clear()
         self.cur_target = None
+        self._pending = False
         self.status.setText("Stopped. Type a new task and press Guide.")
 
     def _on_global_click(self):
-        # main thread (signal-marshalled). Only react while guiding and idle.
-        _dbg("on_global_click: guiding=%s worker_running=%s" % (
-            self.guiding, (self.worker is not None and self.worker.isRunning())))
-        if not self.guiding:
+        # main thread (signal-marshalled). A click is one way to make progress;
+        # the watcher is the other. Both funnel through _register_progress.
+        _dbg("on_global_click: guiding=%s worker_running=%s pending=%s" % (
+            self.guiding, (self.worker is not None and self.worker.isRunning()),
+            self._pending))
+        self._register_progress("click")
+
+    def _register_progress(self, reason):
+        """The user completed the current step (via click OR an auto-detected
+        screen change). Record it and re-plan after the UI settles. Guards make
+        it safe to call from both the click signal and the watcher tick.
+        """
+        if not self.guiding or self._pending:
             return
         if self.worker is not None and self.worker.isRunning():
             return
-        # remember what we just told them to click, then re-plan after settle
+        self._pending = True
+        self._watcher.stop()
+        # remember what we just told them to click
         if self.cur_target and self.cur_target.get("name"):
             nm = self.cur_target["name"]
             if not self.history or self.history[-1] != nm:
                 self.history.append(nm)
         self.cur_target = None
         self.overlay.clear()  # drop the stale pointer immediately for feedback
-        self.status.setText("Got it - looking at the screen (a moment)...")
+        _dbg("register_progress: reason=%s" % reason)
+        self.status.setText(
+            "Got it - looking at the screen (a moment)..." if reason == "click"
+            else "Looks like you did it - finding the next step...")
         self._debounce.start()
+
+    def _watch_tick(self):
+        """Sample the region around the current target; auto-advance once it has
+        changed from the baseline AND stopped moving (the action completed)."""
+        if (not self.guiding or self._pending or not self.cur_target
+                or (self.worker is not None and self.worker.isRunning())):
+            return
+        rect = self.cur_target.get("rect")
+        if not rect:
+            return
+        cur_fg = _fg_hwnd()
+        cur_h = region_hash(rect)
+        if self._watch_base is None:
+            # first tick: capture the baseline AFTER the overlay has painted, so
+            # the ember ring is part of both baseline and later frames (cancels).
+            self._watch_base = (cur_fg, cur_h)
+            self._watch_prev = cur_h
+            return
+        base_fg, base_h = self._watch_base
+        fg_changed = bool(base_fg and cur_fg and cur_fg != base_fg)
+        region_changed = hash_diff(cur_h, base_h) > WATCH_CHANGE
+        if not (fg_changed or region_changed):
+            self._watch_prev = cur_h
+            return
+        # something changed vs the baseline -- only advance once it settles
+        settled = (self._watch_prev is not None
+                   and hash_diff(cur_h, self._watch_prev) <= WATCH_SETTLE)
+        if fg_changed or settled:
+            _dbg("watch: advance fg_changed=%s region_changed=%s" % (
+                fg_changed, region_changed))
+            self._register_progress("auto")
+            return
+        self._watch_prev = cur_h
+
+    def _on_auto_toggled(self, on):
+        self.auto_advance = on
+        if not on:
+            self._watcher.stop()
+            self.status.setText("Auto-advance off - click to move to the next step.")
+        else:
+            if self.guiding and self.cur_target and not self._pending:
+                self._watch_base = None
+                self._watch_prev = None
+                self._watcher.start()
+            self.status.setText("Auto-advance on - I'll move ahead when the screen changes.")
 
     def _advance(self):
         _dbg("advance: guiding=%s" % self.guiding)
@@ -809,6 +959,7 @@ class ControlBar(QtWidgets.QWidget):
             result.get("ok"), len(result.get("marks", [])),
             _pl.get("index"), _pl.get("done")))
         self.guide_btn.setEnabled(True)
+        self._pending = False  # this cycle's plan is in; accept progress again
         if not self.guiding:
             return
         if not result.get("ok"):
@@ -832,6 +983,7 @@ class ControlBar(QtWidgets.QWidget):
             self.overlay.clear()
             self.cur_target = None
             self.guiding = False
+            self._watcher.stop()
             self.bridge.stop()
             self.status.setText("Done!")
             return
@@ -856,6 +1008,12 @@ class ControlBar(QtWidgets.QWidget):
         instr = pl.get("instruction", "Click this.")
         self.overlay.point_at(target["rect"], instr)
         self.status.setText("Step %d · %s · %s" % (self.step, src, instr))
+        # arm the auto-advance watcher on the new target (baseline captured on
+        # the first tick, once the overlay has painted)
+        self._watch_base = None
+        self._watch_prev = None
+        if self.auto_advance:
+            self._watcher.start()
 
 
 # ===========================================================================
