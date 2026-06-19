@@ -41,14 +41,39 @@ import math
 import os
 import re
 import sys
+import threading
 import traceback
 
 from PyQt5 import QtCore, QtGui, QtWidgets
 
+# ---- optional companion modules (guarded: the app still runs standalone) ----
+try:
+    import paths as _paths
+except Exception:
+    _paths = None
+try:
+    import version as _version
+except Exception:
+    _version = None
+try:
+    from nudge_log import get_logger as _get_logger, set_level as _log_set_level
+    _LOG = _get_logger()
+except Exception:
+    _LOG, _log_set_level = None, None
+try:
+    import settings as _settings_mod
+    _CFG = _settings_mod.Settings()
+except Exception:
+    _settings_mod, _CFG = None, None
+try:
+    import prompts as _prompts
+except Exception:
+    _prompts = None
+
 # ---- branding --------------------------------------------------------------
-APP_NAME = "Nudge OS"
-APP_VERSION = "0.3.0"
-APP_TAGLINE = "I point. You click."
+APP_NAME = getattr(_version, "__appname__", "Nudge OS")
+APP_VERSION = getattr(_version, "__version__", "0.4.0")
+APP_TAGLINE = getattr(_version, "__tagline__", "I point. You click.")
 APP_URL = "https://aiautomatesolution.com"
 
 # ---- palette ---------------------------------------------------------------
@@ -75,6 +100,7 @@ THEME = {
 }
 
 MODEL = "claude-haiku-4-5-20251001"
+ANTHROPIC_TIMEOUT = 8.0  # seconds; never let a hung HTTP call wedge a worker
 MAX_MARKS = 60          # cap on elements sent to the planner
 TARGET_W = 1280         # screenshot downscale width sent to the model
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -182,6 +208,33 @@ def _taskbar_for_screen(screen_rect):
         return None
 
 
+# foreground window context (title + process name) captured per scan, kept in
+# thread-local storage so concurrent PlanWorkers never read each other's value
+_scan_ctx = threading.local()
+
+
+def _proc_name(hwnd):
+    """Best-effort process image basename for a window handle (e.g. 'chrome.exe')."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+        pid = wintypes.DWORD()
+        ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        h = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid.value)  # QUERY_LIMITED
+        if not h:
+            return ""
+        try:
+            buf = ctypes.create_unicode_buffer(260)
+            size = wintypes.DWORD(260)
+            if ctypes.windll.kernel32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size)):
+                return os.path.basename(buf.value)
+        finally:
+            ctypes.windll.kernel32.CloseHandle(h)
+    except Exception:
+        pass
+    return ""
+
+
 def scan_marks(screen_rect=None):
     """Return (marks, fg_count, taskbar_count).
 
@@ -198,14 +251,22 @@ def scan_marks(screen_rect=None):
         _auto.SetGlobalSearchTimeout(2)
     except Exception:
         pass
-    # foreground window
+    # foreground window (+ capture its title/app for the planner prompt)
+    title, appname = "", ""
     try:
         hwnd = _auto.GetForegroundWindow()
         win = _auto.ControlFromHandle(hwnd)
         if win is not None:
+            try:
+                title = (win.Name or "").strip()[:120]
+            except Exception:
+                title = ""
             _walk(win, 0, 25, fg, 80)
+        appname = _proc_name(hwnd)
     except Exception:
-        traceback.print_exc()
+        _logx("scan_marks.fg", "")
+    _scan_ctx.win_title = title
+    _scan_ctx.app_name = appname
     # taskbar on the TARGET screen (primary, or a secondary monitor's taskbar)
     try:
         tray = _taskbar_for_screen(screen_rect)
@@ -243,15 +304,23 @@ def scan_marks(screen_rect=None):
 # ===========================================================================
 import os as _os
 
-_DBG = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "debug.log")
+try:
+    _DBG = _paths.log_path() if _paths else _os.path.join(HERE, "debug.log")
+except Exception:
+    _DBG = _os.path.join(HERE, "debug.log")
 _DEBUG_ON = False  # flipped on by --debug; _dbg() is a no-op otherwise
 
 
 def set_debug(on):
-    """Enable/disable the debug trace. When enabled, truncates debug.log."""
+    """Enable/disable the debug trace."""
     global _DEBUG_ON
     _DEBUG_ON = bool(on)
-    if _DEBUG_ON:
+    if _log_set_level:
+        try:
+            _log_set_level(_DEBUG_ON)
+        except Exception:
+            pass
+    if _DEBUG_ON and _LOG is None:
         try:
             with open(_DBG, "w", encoding="utf-8") as f:
                 f.write("--- nudge debug log ---\n")
@@ -262,6 +331,12 @@ def set_debug(on):
 def _dbg(msg):
     if not _DEBUG_ON:
         return
+    if _LOG is not None:
+        try:
+            _LOG.debug(str(msg))
+            return
+        except Exception:
+            pass
     try:
         with open(_DBG, "a", encoding="utf-8") as f:
             f.write(str(msg) + "\n")
@@ -270,14 +345,16 @@ def _dbg(msg):
 
 
 def _logx(where, exc):
-    """Always-on error breadcrumb -> debug.log (best effort), plus stderr."""
+    """Always-on error breadcrumb -> rotating log (best effort), plus stderr."""
+    if _LOG is not None:
+        try:
+            _LOG.exception("ERROR in %s: %r", where, exc)
+            return
+        except Exception:
+            pass
     try:
         with open(_DBG, "a", encoding="utf-8") as f:
             f.write("ERROR in %s: %r\n%s\n" % (where, exc, traceback.format_exc()))
-    except Exception:
-        pass
-    try:
-        traceback.print_exc()
     except Exception:
         pass
 
@@ -538,33 +615,55 @@ _SYSTEM = (
 )
 
 
-def plan(task, marks, history, img_b64):
+def has_api_key():
+    return bool((os.environ.get("ANTHROPIC_API_KEY") or "").strip())
+
+
+def _model():
+    try:
+        return _CFG.get("model", MODEL) if _CFG else MODEL
+    except Exception:
+        return MODEL
+
+
+def plan(task, marks, history, img_b64, win_title=None, app_name=None,
+         route_step=None, stuck_note=None):
     """Ask Claude for the next mark to click. Returns a validated result dict
-    {index, instruction, done, source}. Falls back to a local heuristic on any
-    error/timeout/invalid output. Runs OFF the main thread.
+    {index, instruction, done, source, confidence, key, type_text}. Falls back
+    to a local heuristic on any error/timeout/invalid output (source='offline'
+    when the API is unreachable or unconfigured). Runs OFF the main thread.
     """
     if not marks:
         return {"index": -1,
                 "instruction": "No detectable UI elements -- try the taskbar.",
                 "done": False, "source": "local"}
+    if not has_api_key():
+        fb = _heuristic(task, marks)
+        fb["source"] = "offline"
+        return fb
 
     lines = []
     for m in marks:
         x, y, w, h = m["rect"]
         lines.append("%d: %s [%s] @ (%d,%d,%d,%d)" % (m["i"], m["name"], m["type"], x, y, w, h))
     marks_text = "\n".join(lines)
-    hist_text = ", ".join(history) if history else "(nothing clicked yet)"
-    user_text = (
-        "TASK: %s\n\n"
-        "Already clicked so far: %s\n\n"
-        "Clickable elements (the screenshot shows the live screen):\n%s\n\n"
-        "Return the STRICT JSON for the single next element to click."
-        % (task, hist_text, marks_text)
-    )
+    if _prompts is not None:
+        system_text = _prompts.SYSTEM_PLAN
+        user_text = _prompts.build_user_text(
+            task, history, marks_text, win_title=win_title, app_name=app_name,
+            route_step=route_step, stuck_note=stuck_note)
+    else:
+        system_text = _SYSTEM
+        hist_text = ", ".join(history) if history else "(nothing clicked yet)"
+        user_text = (
+            "TASK: %s\n\nAlready clicked so far: %s\n\n"
+            "Clickable elements (the screenshot shows the live screen):\n%s\n\n"
+            "Return the STRICT JSON for the single next element to click."
+            % (task, hist_text, marks_text))
 
     try:
         import anthropic
-        client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from env
+        client = anthropic.Anthropic(timeout=ANTHROPIC_TIMEOUT, max_retries=0)
         content = []
         if img_b64:
             content.append({
@@ -572,12 +671,24 @@ def plan(task, marks, history, img_b64):
                 "source": {"type": "base64", "media_type": "image/png", "data": img_b64},
             })
         content.append({"type": "text", "text": user_text})
-        msg = client.messages.create(
-            model=MODEL,
-            max_tokens=300,
-            system=_SYSTEM,
-            messages=[{"role": "user", "content": content}],
-        )
+        cached_sys = [{"type": "text", "text": system_text,
+                       "cache_control": {"type": "ephemeral"}}]
+
+        msg, last = None, None
+        # try cached system first; on any failure fall back to a plain string
+        # (also covers a transient network blip as a single retry)
+        for sysp in (cached_sys, system_text):
+            try:
+                msg = client.messages.create(
+                    model=_model(), max_tokens=320, system=sysp,
+                    messages=[{"role": "user", "content": content}])
+                break
+            except Exception as ex:
+                last = ex
+                continue
+        if msg is None:
+            raise last or RuntimeError("no response")
+
         raw = ""
         for block in getattr(msg, "content", []) or []:
             if getattr(block, "type", None) == "text":
@@ -586,19 +697,28 @@ def plan(task, marks, history, img_b64):
         if not isinstance(data, dict) or "index" not in data:
             return _heuristic(task, marks)
         idx = int(data.get("index", -1))
-        if idx < 0 or idx >= len(marks):
-            # model picked an out-of-range index -> heuristic, but keep its words
-            fb = _heuristic(task, marks)
-            return fb
-        return {
-            "index": idx,
+        out = {
             "instruction": str(data.get("instruction") or "Click this.").strip()[:160],
             "done": bool(data.get("done", False)),
             "source": "AI",
+            "confidence": data.get("confidence"),
+            "key": (data.get("key") or None),
+            "type_text": (data.get("type_text") or None),
         }
-    except Exception:
-        traceback.print_exc()
+        if 0 <= idx < len(marks):
+            out["index"] = idx
+            return out
+        # a keyboard-only step (index -1 + key/type_text) or done is also valid
+        if idx < 0 and (out["key"] or out["type_text"] or out["done"]):
+            out["index"] = -1
+            return out
+        # otherwise the model picked an out-of-range index -> heuristic
         return _heuristic(task, marks)
+    except Exception as ex:
+        _logx("plan", ex)
+        fb = _heuristic(task, marks)
+        fb["source"] = "offline"
+        return fb
 
 
 # ===========================================================================
@@ -617,6 +737,8 @@ class Overlay(QtWidgets.QWidget):
         self.t = None         # target rect (x,y,w,h) in screen pixels, or None
         self.label = ""
         self.step = None
+        self.key_label = None  # keyboard-step hint (e.g. "Press  Win+R")
+        self.key_geom = None   # QRect of the screen to center the keycap on
         self._phase = 0.0     # 0..1 animation phase for the breathing ring
         self.setWindowFlags(
             QtCore.Qt.FramelessWindowHint
@@ -641,6 +763,19 @@ class Overlay(QtWidgets.QWidget):
         self.t = tuple(int(v) for v in rect)
         self.label = label or ""
         self.step = step
+        self.key_label = None
+        if not self.isVisible():
+            self.show()
+        self.raise_()
+        if not self._anim.isActive():
+            self._anim.start()
+        self.update()
+
+    def show_key(self, label, screen_geom):
+        """Show a centered keycap hint for a keyboard step (no click target)."""
+        self.t = None
+        self.key_label = label or ""
+        self.key_geom = screen_geom
         if not self.isVisible():
             self.show()
         self.raise_()
@@ -652,15 +787,45 @@ class Overlay(QtWidgets.QWidget):
         self.t = None
         self.label = ""
         self.step = None
+        self.key_label = None
+        self.key_geom = None
         self._anim.stop()
         self.update()
 
     @guard
     def paintEvent(self, _):
-        if not self.t:
-            return
         p = QtGui.QPainter(self)
         p.setRenderHint(QtGui.QPainter.Antialiasing, True)
+        if self.t:
+            self._paint_ring(p)
+        elif self.key_label:
+            self._paint_keycap(p)
+
+    def _paint_keycap(self, p):
+        """Centered keycap hint for a keyboard step (e.g. 'Press  Win+R')."""
+        geom = self.key_geom or QtWidgets.QApplication.primaryScreen().geometry()
+        b = 0.5 - 0.5 * math.cos(self._phase * 2 * math.pi)
+        f = QtGui.QFont("Segoe UI", 15)
+        f.setBold(True)
+        fm = QtGui.QFontMetrics(f)
+        tw = fm.horizontalAdvance(self.key_label) + 56
+        th = 60
+        cx = geom.center().x() - self.sg.left()
+        cy = geom.center().y() - self.sg.top()
+        kx, ky = cx - tw // 2, cy - th // 2
+        # breathing glow
+        p.setPen(QtCore.Qt.NoPen)
+        p.setBrush(QtGui.QColor(255, 107, 53, int(40 + 50 * b)))
+        p.drawRoundedRect(kx - 8, ky - 8, tw + 16, th + 16, 18, 18)
+        # keycap
+        p.setBrush(INK)
+        p.setPen(QtGui.QPen(EMBER, 2))
+        p.drawRoundedRect(kx, ky, tw, th, 14, 14)
+        p.setFont(f)
+        p.setPen(BONE)
+        p.drawText(QtCore.QRect(kx, ky, tw, th), QtCore.Qt.AlignCenter, self.key_label)
+
+    def _paint_ring(self, p):
         x, y, w, h = self.t
         x -= self.sg.left()
         y -= self.sg.top()
@@ -811,7 +976,9 @@ class PlanWorker(QtCore.QThread):
             b64 = None
             if not confident:
                 _img, b64, _scale = grab_screen(self.mon_index)
-            pl = plan(self.task, marks, self.history, b64)
+            wt = getattr(_scan_ctx, "win_title", None)
+            an = getattr(_scan_ctx, "app_name", None)
+            pl = plan(self.task, marks, self.history, b64, win_title=wt, app_name=an)
             result.update({"ok": True, "marks": marks, "plan": pl, "fg": fg, "tb": tb})
         except Exception as ex:  # pragma: no cover - safety net
             traceback.print_exc()
@@ -1478,6 +1645,24 @@ class ControlBar(QtWidgets.QWidget):
             self._watcher.start()
 
     @guard
+    def _show_key_hint(self, pl, gen):
+        """Render a keyboard step (Press Win+R / type text). Watches the whole
+        assist screen so the resulting foreground change auto-advances."""
+        key, txt = pl.get("key"), pl.get("type_text")
+        label = ("Press  %s" % key) if key else ('Type:  "%s"' % txt)
+        if self._pointed_gen != gen:
+            self.step += 1
+            self._pointed_gen = gen
+        scr, _ = self._resolve_target_screen()
+        g = scr.geometry()
+        self.cur_target = {"name": label, "rect": (g.left(), g.top(), g.width(), g.height())}
+        self.overlay.show_key(label, g)
+        self._set_state("pointing", "Step %d · key · %s" % (self.step, label))
+        self._watch_base = None
+        self._watch_prev = None
+        if self.auto_advance and not self._watcher.isActive():
+            self._watcher.start()
+
     def _on_prelim(self, result):
         """Instant optimistic pointer the moment the scan + heuristic land, for
         confident matches -- before the vision call returns."""
@@ -1542,6 +1727,12 @@ class ControlBar(QtWidgets.QWidget):
             self.task_edit.clear()
             self.task_edit.setFocus()
             self._set_state("done", "Done! Type your next task and press Guide.")
+            return
+
+        # keyboard-only step (no clickable mark) -> centered keycap hint
+        _idx = pl.get("index", -1)
+        if (pl.get("key") or pl.get("type_text")) and (_idx is None or _idx < 0):
+            self._show_key_hint(pl, result.get("gen"))
             return
 
         idx = pl.get("index", -1)

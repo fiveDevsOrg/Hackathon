@@ -1,0 +1,10 @@
+# Nudge OS — runtime dependencies (Windows, Python 3.13)
+# Pinned-compatible: exact pin for Qt (ABI-sensitive), floors for the rest.
+PyQt5==5.15.11
+anthropic>=0.40
+mss>=9.0
+Pillow>=10.0
+uiautomation>=2.0
+comtypes>=1.2
+pynput>=1.7
+pyttsx3>=2.90
