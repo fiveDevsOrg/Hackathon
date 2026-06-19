@@ -590,6 +590,14 @@ def _heuristic(task, marks):
                 break
         if best_i < 0:
             best_i = marks[0]["i"]
+    if best_score >= 2 and unique:
+        conf = 0.9
+    elif best_score >= 1 and unique:
+        conf = 0.65
+    elif best_score >= 1:
+        conf = 0.45
+    else:
+        conf = 0.3
     return {
         "index": best_i,
         "instruction": "Best local guess: click \"%s\"." % marks[best_i]["name"],
@@ -597,6 +605,7 @@ def _heuristic(task, marks):
         "source": "local",
         "score": best_score,
         "unique": unique,
+        "confidence": conf,
     }
 
 
@@ -779,6 +788,7 @@ class Overlay(QtWidgets.QWidget):
         self.key_geom = None   # QRect of the screen to center the keycap on
         self._phase = 0.0     # 0..1 animation phase for the breathing ring
         self._intensity = 1.0  # user-tunable ring/glow scale (0.5..1.5)
+        self.conf = 1.0        # plan confidence -> solid ember vs dashed amber
         self.setWindowFlags(
             QtCore.Qt.FramelessWindowHint
             | QtCore.Qt.WindowStaysOnTopHint
@@ -798,10 +808,14 @@ class Overlay(QtWidgets.QWidget):
         self._phase = (self._phase + 0.045) % 1.0
         self.update()
 
-    def point_at(self, rect, label, step=None):
+    def point_at(self, rect, label, step=None, confidence=1.0):
         self.t = tuple(int(v) for v in rect)
         self.label = label or ""
         self.step = step
+        try:
+            self.conf = 1.0 if confidence is None else float(confidence)
+        except Exception:
+            self.conf = 1.0
         self.key_label = None
         if not self.isVisible():
             self.show()
@@ -884,12 +898,20 @@ class Overlay(QtWidgets.QWidget):
         ring_w = max(2, int(round(3 * k)))
         glow_w = max(5, int(round(9 * k)))
 
+        # low-confidence picks ring in dashed amber (honest "best guess" signal)
+        low = self.conf < 0.5
+        ring_col = QtGui.QColor("#FFC857") if low else EMBER
+        glow_rgb = (255, 200, 87) if low else (255, 107, 53)
+
         # outer breathing glow + crisp inner ring
         p.setBrush(QtCore.Qt.NoBrush)
-        p.setPen(QtGui.QPen(QtGui.QColor(255, 107, 53, glow_alpha), glow_w))
+        p.setPen(QtGui.QPen(QtGui.QColor(glow_rgb[0], glow_rgb[1], glow_rgb[2], glow_alpha), glow_w))
         p.drawRoundedRect(x - glow_pad, y - glow_pad,
                           w + glow_pad * 2, h + glow_pad * 2, 14, 14)
-        p.setPen(QtGui.QPen(EMBER, ring_w))
+        ring_pen = QtGui.QPen(ring_col, ring_w)
+        if low:
+            ring_pen.setStyle(QtCore.Qt.DashLine)
+        p.setPen(ring_pen)
         p.drawRoundedRect(x - 5, y - 5, w + 10, h + 10, 10, 10)
 
         # ghost cursor (arrow) just off the target's corner
@@ -1870,7 +1892,7 @@ class ControlBar(QtWidgets.QWidget):
         self.worker = w
         w.start()
 
-    def _show_target(self, mark, instr, src, gen, rearm=True):
+    def _show_target(self, mark, instr, src, gen, rearm=True, confidence=1.0):
         """Point at `mark`, count the step once per gen, and (re)arm the watcher.
         rearm=False leaves an already-running watcher + its baseline untouched
         (used when the vision plan merely confirms the optimistic target)."""
@@ -1894,7 +1916,7 @@ class ControlBar(QtWidgets.QWidget):
             self._pointed_gen = gen
             if self.step >= self._est_total:
                 self._est_total = self.step + 1  # estimate only ever clamps up
-        self.overlay.point_at(mark["rect"], instr, self.step)
+        self.overlay.point_at(mark["rect"], instr, self.step, confidence)
         if self._repeat_count >= STALL_LIMIT:
             # break the loop: leave the pointer up but stop auto-re-arming
             self._set_state("waiting",
@@ -1944,7 +1966,9 @@ class ControlBar(QtWidgets.QWidget):
             return
         self.marks = marks
         t = marks[idx]
-        self._show_target(t, 'Click "%s".' % t["name"], "fast", result["gen"])
+        conf = (result.get("plan") or {}).get("confidence", 0.9)
+        self._show_target(t, 'Click "%s".' % t["name"], "fast", result["gen"],
+                          confidence=conf)
 
     @guard
     def _on_plan(self, result):
@@ -2029,7 +2053,8 @@ class ControlBar(QtWidgets.QWidget):
         if same:
             self._set_state("pointing", self._step_status(src, instr))
         else:
-            self._show_target(target, instr, src, result.get("gen"), rearm=True)
+            self._show_target(target, instr, src, result.get("gen"), rearm=True,
+                              confidence=pl.get("confidence"))
 
 
 # ===========================================================================
