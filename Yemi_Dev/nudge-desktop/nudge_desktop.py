@@ -97,6 +97,11 @@ SETTLE_TOL = 0.05       # frame-to-frame diff below this == "not moving"
 SETTLE_HINT_MS = 1200   # after this long still moving, tell the user we're
                         # waiting for it to load
 
+# ---- safety caps -----------------------------------------------------------
+HISTORY_CAP = 25        # trim the clicked-history we send to the planner
+INFLIGHT_CAP = 6        # max concurrently-tracked PlanWorkers
+STALL_LIMIT = 4         # re-pointing the same target this many times -> warn
+
 
 # ===========================================================================
 # UIA scan -- lifted from poc_uia.py, returns a flat list of marks
@@ -264,6 +269,52 @@ def _dbg(msg):
         pass
 
 
+def _logx(where, exc):
+    """Always-on error breadcrumb -> debug.log (best effort), plus stderr."""
+    try:
+        with open(_DBG, "a", encoding="utf-8") as f:
+            f.write("ERROR in %s: %r\n%s\n" % (where, exc, traceback.format_exc()))
+    except Exception:
+        pass
+    try:
+        traceback.print_exc()
+    except Exception:
+        pass
+
+
+def guard(fn):
+    """Wrap a Qt slot / timer callback so an exception is logged but never
+    propagates -- a single bad tick must never tear down the event loop."""
+    def wrapper(*a, **k):
+        try:
+            return fn(*a, **k)
+        except Exception as ex:  # pragma: no cover - safety net
+            _logx(fn.__name__, ex)
+            return None
+    wrapper.__name__ = getattr(fn, "__name__", "wrapped")
+    wrapper.__doc__ = getattr(fn, "__doc__", None)
+    return wrapper
+
+
+def install_excepthook():
+    """Last-resort hook: log unhandled exceptions instead of dying silently."""
+    prev = sys.excepthook
+
+    def hook(et, ev, tb):
+        try:
+            with open(_DBG, "a", encoding="utf-8") as f:
+                f.write("UNHANDLED: %r\n%s\n" % (
+                    ev, "".join(traceback.format_exception(et, ev, tb))))
+        except Exception:
+            pass
+        try:
+            prev(et, ev, tb)
+        except Exception:
+            pass
+
+    sys.excepthook = hook
+
+
 def mss_index_for(qgeom):
     """Map a Qt QScreen.geometry() to an mss monitor index (1-based). 1 on miss."""
     try:
@@ -367,6 +418,20 @@ def hash_diff(a, b, tol=24):
         if abs(ca - cb) > tol:
             d += 1
     return d / float(len(a))
+
+
+def rect_on_screen(rect):
+    """True if the rect has positive size and its center lies on a real screen.
+    Fail-open (True on error) so a check glitch never blocks pointing."""
+    try:
+        x, y, w, h = rect
+        if w <= 0 or h <= 0:
+            return False
+        cx, cy = x + w // 2, y + h // 2
+        vg = QtWidgets.QApplication.primaryScreen().virtualGeometry()
+        return (vg.left() <= cx <= vg.right()) and (vg.top() <= cy <= vg.bottom())
+    except Exception:
+        return True
 
 
 # ===========================================================================
@@ -590,6 +655,7 @@ class Overlay(QtWidgets.QWidget):
         self._anim.stop()
         self.update()
 
+    @guard
     def paintEvent(self, _):
         if not self.t:
             return
@@ -736,6 +802,10 @@ class PlanWorker(QtCore.QThread):
             # decides whether to actually show it)
             self.prelim.emit({"marks": marks, "plan": h, "fg": fg, "tb": tb,
                               "confident": confident, "gen": self.gen})
+            # bail early if we were superseded / app is closing
+            if self.isInterruptionRequested():
+                self.finished.emit(result)
+                return
             # unambiguous element -> skip the screenshot; text-only is faster.
             # ambiguous -> send the screenshot so the model can ground visually.
             b64 = None
@@ -890,6 +960,8 @@ class ControlBar(QtWidgets.QWidget):
         self._gen = 0
         self._pointed_gen = -1     # gen we've already counted a step for
         self._inflight = []        # running PlanWorkers (kept alive until done)
+        self._repeat_sig = None    # signature of the last target (stall detect)
+        self._repeat_count = 0
 
         # post-action settle: after a click/auto-advance, wait for the screen to
         # STOP changing (a program may take time to load) before re-planning, so
@@ -1085,6 +1157,7 @@ class ControlBar(QtWidgets.QWidget):
         else:
             self._pulse.stop()
 
+    @guard
     def _pulse_tick(self):
         self._pulse_on = not self._pulse_on
         base = self._STATE_COLORS.get(self._state, THEME["ember"])
@@ -1112,12 +1185,27 @@ class ControlBar(QtWidgets.QWidget):
             self.raise_()
             self.activateWindow()
 
+    def _drain_workers(self):
+        """Ask in-flight PlanWorkers to stop and wait briefly so the process
+        never hangs on exit with 'QThread destroyed while running'."""
+        for w in list(self._inflight):
+            try:
+                w.requestInterruption()
+                w.quit()
+                w.wait(1500)
+            except Exception:
+                pass
+        self._inflight = []
+
     def closeEvent(self, e):
         try:
+            self.guiding = False
             self.bridge.stop()
             self.hotkeys.stop_listener()
             self._watcher.stop()
             self._settle.stop()
+            self._pulse.stop()
+            self._drain_workers()
             self.settings.sync()
         except Exception:
             pass
@@ -1181,6 +1269,8 @@ class ControlBar(QtWidgets.QWidget):
         self.history = []
         self.step = 0
         self._pointed_gen = -1
+        self._repeat_sig = None
+        self._repeat_count = 0
         self.guiding = True
         self._pending = False
         self._watch_base = None
@@ -1201,6 +1291,7 @@ class ControlBar(QtWidgets.QWidget):
         self._pending = False
         self._set_state("idle", "Stopped. Type a new task and press Guide.")
 
+    @guard
     def _on_global_click(self):
         # main thread (signal-marshalled). A click is one way to make progress;
         # the watcher is the other. Both funnel through _register_progress.
@@ -1224,6 +1315,7 @@ class ControlBar(QtWidgets.QWidget):
             nm = self.cur_target["name"]
             if not self.history or self.history[-1] != nm:
                 self.history.append(nm)
+            self.history = self.history[-HISTORY_CAP:]  # bound prompt + memory
         self.cur_target = None
         self.overlay.clear()  # drop the stale pointer immediately for feedback
         _dbg("register_progress: reason=%s" % reason)
@@ -1244,6 +1336,7 @@ class ControlBar(QtWidgets.QWidget):
         self._settle_rect = (g.left(), g.top(), g.width(), g.height())
         self._settle.start()
 
+    @guard
     def _settle_tick(self):
         """Poll the assist screen; re-plan once it has been quiet for a couple
         of polls (program finished loading) or we hit the max-wait cap."""
@@ -1272,6 +1365,7 @@ class ControlBar(QtWidgets.QWidget):
                 self._settle_elapsed >= SETTLE_MAX_MS))
             self._advance()
 
+    @guard
     def _watch_tick(self):
         """Sample the region around the current target; auto-advance once it has
         changed from the baseline AND stopped moving (the action completed)."""
@@ -1327,6 +1421,15 @@ class ControlBar(QtWidgets.QWidget):
         self._gen += 1
         gen = self._gen
         _dbg("kick gen=%d" % gen)
+        # prune finished workers (backstop reap) and cap concurrency
+        self._inflight = [x for x in self._inflight if x.isRunning()]
+        while len(self._inflight) >= INFLIGHT_CAP:
+            old = self._inflight.pop(0)
+            try:
+                old.requestInterruption()
+                old.quit()
+            except Exception:
+                pass
         self.guide_btn.setEnabled(False)
         _scr, mon = self._resolve_target_screen()
         g = _scr.geometry()
@@ -1342,11 +1445,31 @@ class ControlBar(QtWidgets.QWidget):
         """Point at `mark`, count the step once per gen, and (re)arm the watcher.
         rearm=False leaves an already-running watcher + its baseline untouched
         (used when the vision plan merely confirms the optimistic target)."""
+        # stale-pointer guard: never ring dead space (monitor unplugged / window moved)
+        if not rect_on_screen(mark["rect"]):
+            self.overlay.clear()
+            self.cur_target = None
+            self._set_state("waiting", "That element moved - re-checking...")
+            QtCore.QTimer.singleShot(150, lambda: self._kick() if self.guiding else None)
+            return
+        # loop/stall detection: same target re-pointed many times in a row
+        sig = "%s|%s" % (mark["name"], mark["rect"])
+        if sig == self._repeat_sig:
+            self._repeat_count += 1
+        else:
+            self._repeat_sig = sig
+            self._repeat_count = 1
         self.cur_target = {"name": mark["name"], "rect": mark["rect"]}
         if self._pointed_gen != gen:
             self.step += 1
             self._pointed_gen = gen
         self.overlay.point_at(mark["rect"], instr, self.step)
+        if self._repeat_count >= STALL_LIMIT:
+            # break the loop: leave the pointer up but stop auto-re-arming
+            self._set_state("waiting",
+                            "Still on the same step - if you already did this, press "
+                            "Stop and rephrase, or click the highlighted item.")
+            return
         self._set_state("pointing", "Step %d · %s · %s" % (self.step, src, instr))
         if rearm:
             self._watch_base = None
@@ -1354,6 +1477,7 @@ class ControlBar(QtWidgets.QWidget):
         if self.auto_advance and not self._watcher.isActive():
             self._watcher.start()
 
+    @guard
     def _on_prelim(self, result):
         """Instant optimistic pointer the moment the scan + heuristic land, for
         confident matches -- before the vision call returns."""
@@ -1369,6 +1493,7 @@ class ControlBar(QtWidgets.QWidget):
         t = marks[idx]
         self._show_target(t, 'Click "%s".' % t["name"], "fast", result["gen"])
 
+    @guard
     def _on_plan(self, result):
         # back on the main thread
         w = self.sender()
@@ -1587,6 +1712,7 @@ def main():
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
+    install_excepthook()
 
     args = sys.argv[1:]
     if "--debug" in args:
