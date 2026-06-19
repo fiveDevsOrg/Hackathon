@@ -5,7 +5,7 @@ from anywhere (including very early during startup) without side effects.
 """
 
 # Human-facing semantic version of the application.
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 # Product / display name shown in window titles, about dialogs, etc.
 __appname__ = "Nudge OS"
