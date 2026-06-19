@@ -452,6 +452,13 @@ class PlanWorker(QtCore.QThread):
 
     def run(self):
         result = {"ok": False, "marks": [], "plan": None, "fg": 0, "tb": 0, "error": ""}
+        com = False
+        try:
+            import comtypes
+            comtypes.CoInitialize()  # UIA needs COM initialized on THIS thread
+            com = True
+        except Exception:
+            pass
         try:
             marks, fg, tb = scan_marks()
             _img, b64, _scale = grab_screen()
@@ -460,6 +467,13 @@ class PlanWorker(QtCore.QThread):
         except Exception as ex:  # pragma: no cover - safety net
             traceback.print_exc()
             result["error"] = str(ex)
+        finally:
+            if com:
+                try:
+                    import comtypes
+                    comtypes.CoUninitialize()
+                except Exception:
+                    pass
         self.finished.emit(result)
 
 
