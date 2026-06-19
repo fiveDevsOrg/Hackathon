@@ -803,6 +803,12 @@ class Overlay(QtWidgets.QWidget):
         self._anim = QtCore.QTimer(self)
         self._anim.setInterval(33)
         self._anim.timeout.connect(self._tick)
+        # one-shot green "Done" flourish
+        self._flash_geom = None
+        self._flash_t = 0.0
+        self._flash_timer = QtCore.QTimer(self)
+        self._flash_timer.setInterval(40)
+        self._flash_timer.timeout.connect(self._flash_tick)
 
     def _tick(self):
         self._phase = (self._phase + 0.045) % 1.0
@@ -817,6 +823,8 @@ class Overlay(QtWidgets.QWidget):
         except Exception:
             self.conf = 1.0
         self.key_label = None
+        self._flash_t = 0.0
+        self._flash_timer.stop()
         if not self.isVisible():
             self.show()
         self.raise_()
@@ -824,11 +832,35 @@ class Overlay(QtWidgets.QWidget):
             self._anim.start()
         self.update()
 
+    def flash_done(self, screen_geom):
+        """A one-shot green check 'Done' flourish centered on the assist screen."""
+        self.t = None
+        self.key_label = None
+        self._flash_geom = screen_geom
+        self._flash_t = 1.0
+        if not self.isVisible():
+            self.show()
+        self.raise_()
+        self._flash_timer.start()
+        self.update()
+
+    @guard
+    def _flash_tick(self):
+        self._flash_t -= 0.045
+        if self._flash_t <= 0:
+            self._flash_t = 0.0
+            self._flash_timer.stop()
+            self.clear()
+        else:
+            self.update()
+
     def show_key(self, label, screen_geom):
         """Show a centered keycap hint for a keyboard step (no click target)."""
         self.t = None
         self.key_label = label or ""
         self.key_geom = screen_geom
+        self._flash_t = 0.0
+        self._flash_timer.stop()
         if not self.isVisible():
             self.show()
         self.raise_()
@@ -843,6 +875,8 @@ class Overlay(QtWidgets.QWidget):
         self.key_label = None
         self.key_geom = None
         self._anim.stop()
+        self._flash_t = 0.0
+        self._flash_timer.stop()
         self.update()
 
     def set_intensity(self, level):
@@ -860,6 +894,51 @@ class Overlay(QtWidgets.QWidget):
             self._paint_ring(p)
         elif self.key_label:
             self._paint_keycap(p)
+        elif self._flash_t > 0:
+            self._paint_flash(p)
+
+    def _paint_flash(self, p):
+        """Fading green check 'Done' badge centered on the assist screen."""
+        geom = self._flash_geom or QtWidgets.QApplication.primaryScreen().geometry()
+        a = max(0.0, min(1.0, self._flash_t))
+        f = QtGui.QFont("Segoe UI", 15)
+        f.setBold(True)
+        tw, th = 150, 56
+        cx = geom.center().x() - self.sg.left()
+        cy = geom.center().y() - self.sg.top()
+        kx, ky = cx - tw // 2, cy - th // 2
+        green = QtGui.QColor("#5BD08A")
+        # glow
+        p.setPen(QtCore.Qt.NoPen)
+        p.setBrush(QtGui.QColor(91, 208, 138, int(45 * a)))
+        p.drawRoundedRect(kx - 10, ky - 10, tw + 20, th + 20, 18, 18)
+        # card
+        ink = QtGui.QColor(INK)
+        ink.setAlphaF(0.96 * a)
+        p.setBrush(ink)
+        gp = QtGui.QColor(green)
+        gp.setAlphaF(a)
+        pen = QtGui.QPen(gp, 2)
+        p.setPen(pen)
+        p.drawRoundedRect(kx, ky, tw, th, 14, 14)
+        # check disc
+        p.setPen(QtCore.Qt.NoPen)
+        p.setBrush(gp)
+        dcx, dcy = kx + 28, ky + th // 2
+        p.drawEllipse(dcx - 11, dcy - 11, 22, 22)
+        cpen = QtGui.QPen(QtGui.QColor("#0E0D0C"), 3)
+        cpen.setCapStyle(QtCore.Qt.RoundCap)
+        p.setPen(cpen)
+        p.drawPolyline(QtGui.QPolygon([
+            QtCore.QPoint(dcx - 5, dcy), QtCore.QPoint(dcx - 1, dcy + 4),
+            QtCore.QPoint(dcx + 6, dcy - 5)]))
+        # label
+        tcol = QtGui.QColor(BONE)
+        tcol.setAlphaF(a)
+        p.setPen(tcol)
+        p.setFont(f)
+        p.drawText(QtCore.QRect(kx + 48, ky, tw - 52, th),
+                   QtCore.Qt.AlignVCenter, "Done")
 
     def _paint_keycap(self, p):
         """Centered keycap hint for a keyboard step (e.g. 'Press  Win+R')."""
@@ -1399,6 +1478,15 @@ class ControlBar(QtWidgets.QWidget):
         strow.addWidget(self.intensity, 0)
         lay.addLayout(strow)
 
+        # thin indeterminate "thinking" shimmer (visible only while a plan runs)
+        self.progress = QtWidgets.QProgressBar()
+        self.progress.setObjectName("shimmer")
+        self.progress.setRange(0, 0)
+        self.progress.setTextVisible(False)
+        self.progress.setFixedHeight(3)
+        self.progress.hide()
+        lay.addWidget(self.progress)
+
         self.setStyleSheet(self._qss())
         self._set_state("idle")
 
@@ -1462,6 +1550,8 @@ class ControlBar(QtWidgets.QWidget):
         #intensity::handle:horizontal { background: @bone@; width: 11px;
             margin: -4px 0; border-radius: 5px; }
         #intensity::handle:horizontal:hover { background: @ember_hi@; }
+        #shimmer { background: transparent; border: none; max-height: 3px; }
+        #shimmer::chunk { background: @ember@; border-radius: 2px; }
         """
         for k, v in THEME.items():
             css = css.replace("@%s@" % k, v)
@@ -1650,6 +1740,10 @@ class ControlBar(QtWidgets.QWidget):
         self.cur_target = None
         self._pending = False
         self.explain_btn.setEnabled(False)
+        try:
+            self.progress.hide()
+        except Exception:
+            pass
         self._set_state("idle", "Stopped. Type a new task and press Guide.")
 
     @guard
@@ -1890,6 +1984,10 @@ class ControlBar(QtWidgets.QWidget):
         w.finished.connect(self._on_plan)
         self._inflight.append(w)   # keep a ref so the QThread isn't GC'd mid-run
         self.worker = w
+        try:
+            self.progress.show()   # thinking shimmer
+        except Exception:
+            pass
         w.start()
 
     def _show_target(self, mark, instr, src, gen, rearm=True, confidence=1.0):
@@ -1980,6 +2078,10 @@ class ControlBar(QtWidgets.QWidget):
             pass
         if result.get("gen") != self._gen:
             return  # superseded by a newer cycle -- ignore this result
+        try:
+            self.progress.hide()  # plan landed -> stop the thinking shimmer
+        except Exception:
+            pass
         _pl = result.get("plan") or {}
         _dbg("on_plan: gen=%s ok=%s marks=%d idx=%s done=%s" % (
             result.get("gen"), result.get("ok"), len(result.get("marks", [])),
@@ -2007,7 +2109,11 @@ class ControlBar(QtWidgets.QWidget):
             return
 
         if pl.get("done"):
-            self.overlay.clear()
+            try:
+                scr, _ = self._resolve_target_screen()
+                self.overlay.flash_done(scr.geometry())
+            except Exception:
+                self.overlay.clear()
             self.cur_target = None
             self.guiding = False
             self._watcher.stop()
