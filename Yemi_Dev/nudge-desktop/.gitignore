@@ -3,3 +3,7 @@ __pycache__/
 *.png
 *.pyc
 *.log
+@AutomationLog.txt
+build/
+dist/
+*.spec.bak

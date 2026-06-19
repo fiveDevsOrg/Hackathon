@@ -37,6 +37,7 @@ All cross-thread communication is via pyqtSignal. No Qt call ever leaves thread 
 import base64
 import io
 import json
+import math
 import os
 import re
 import sys
@@ -44,10 +45,34 @@ import traceback
 
 from PyQt5 import QtCore, QtGui, QtWidgets
 
-# ---- palette (matches the proven overlay PoC) ------------------------------
+# ---- branding --------------------------------------------------------------
+APP_NAME = "Nudge OS"
+APP_VERSION = "0.3.0"
+APP_TAGLINE = "I point. You click."
+APP_URL = "https://aiautomatesolution.com"
+
+# ---- palette ---------------------------------------------------------------
+# Brand ember on ink (AIAS). Kept as QColor for the painter; hex twins below
+# feed the stylesheet. THEME centralizes every colour so re-skinning is 1 edit.
 EMBER = QtGui.QColor("#FF6B35")
+EMBER_HI = QtGui.QColor("#FF8A5B")
 INK = QtGui.QColor(18, 20, 26, 242)
 BONE = QtGui.QColor("#F4F2EC")
+
+THEME = {
+    "ember": "#FF6B35",
+    "ember_hi": "#FF8A5B",
+    "ember_dim": "#C9531F",
+    "ink": "#12141A",
+    "ink2": "#0E0D0C",
+    "panel": "rgba(18,20,26,242)",
+    "edge": "#3A3530",
+    "bone": "#F4F2EC",
+    "muted": "#B9B2A8",
+    "ok": "#5BD08A",
+    "warn": "#FFC857",
+    "err": "#FF5C5C",
+}
 
 MODEL = "claude-haiku-4-5-20251001"
 MAX_MARKS = 60          # cap on elements sent to the planner
@@ -526,6 +551,8 @@ class Overlay(QtWidgets.QWidget):
         super().__init__()
         self.t = None         # target rect (x,y,w,h) in screen pixels, or None
         self.label = ""
+        self.step = None
+        self._phase = 0.0     # 0..1 animation phase for the breathing ring
         self.setWindowFlags(
             QtCore.Qt.FramelessWindowHint
             | QtCore.Qt.WindowStaysOnTopHint
@@ -536,18 +563,31 @@ class Overlay(QtWidgets.QWidget):
         # span the ENTIRE virtual desktop so the pointer can land on ANY monitor
         self.sg = QtWidgets.QApplication.primaryScreen().virtualGeometry()
         self.setGeometry(self.sg)
+        # ~30fps breathing animation, only running while we have a target
+        self._anim = QtCore.QTimer(self)
+        self._anim.setInterval(33)
+        self._anim.timeout.connect(self._tick)
 
-    def point_at(self, rect, label):
+    def _tick(self):
+        self._phase = (self._phase + 0.045) % 1.0
+        self.update()
+
+    def point_at(self, rect, label, step=None):
         self.t = tuple(int(v) for v in rect)
         self.label = label or ""
+        self.step = step
         if not self.isVisible():
             self.show()
         self.raise_()
+        if not self._anim.isActive():
+            self._anim.start()
         self.update()
 
     def clear(self):
         self.t = None
         self.label = ""
+        self.step = None
+        self._anim.stop()
         self.update()
 
     def paintEvent(self, _):
@@ -559,10 +599,16 @@ class Overlay(QtWidgets.QWidget):
         x -= self.sg.left()
         y -= self.sg.top()
 
-        # highlight ring (soft glow + crisp ring)
+        # breathing factor (smooth 0..1 via cosine)
+        b = 0.5 - 0.5 * math.cos(self._phase * 2 * math.pi)
+        glow_pad = 6 + int(9 * b)
+        glow_alpha = int(45 + 80 * b)
+
+        # outer breathing glow + crisp inner ring
         p.setBrush(QtCore.Qt.NoBrush)
-        p.setPen(QtGui.QPen(QtGui.QColor(255, 107, 53, 90), 10))
-        p.drawRoundedRect(x - 9, y - 9, w + 18, h + 18, 14, 14)
+        p.setPen(QtGui.QPen(QtGui.QColor(255, 107, 53, glow_alpha), 9))
+        p.drawRoundedRect(x - glow_pad, y - glow_pad,
+                          w + glow_pad * 2, h + glow_pad * 2, 14, 14)
         p.setPen(QtGui.QPen(EMBER, 3))
         p.drawRoundedRect(x - 5, y - 5, w + 10, h + 10, 10, 10)
 
@@ -575,34 +621,78 @@ class Overlay(QtWidgets.QWidget):
             QtCore.QPoint(cx + 8, cy + 10), QtCore.QPoint(cx + 12, cy + 22),
         ]))
 
-        # tooltip -- flips above the target if it would fall off the bottom
-        f = QtGui.QFont("Segoe UI", 11)
-        fb = QtGui.QFont("Segoe UI", 11)
-        fb.setBold(True)
-        pad, th = 14, 34
-        tw = QtGui.QFontMetrics(fb).horizontalAdvance("Nudge") + 8 + \
-            QtGui.QFontMetrics(f).horizontalAdvance(self.label) + pad * 2
-        # clamp the tooltip to the monitor the TARGET sits on (not the whole
-        # virtual desktop), so it never spills onto an adjacent screen.
+        self._paint_tooltip(p, x, y, w, h)
+
+    def _paint_tooltip(self, p, x, y, w, h):
+        """A rounded ink card with an ember NUDGE chip, optional step badge, the
+        instruction, a drop shadow, and a tail pointing at the target."""
+        f = QtGui.QFont("Segoe UI", 10)
+        fp = QtGui.QFont("Segoe UI", 8)
+        fp.setBold(True)
+        pad, th, chip_h = 12, 32, 18
+        chip = "NUDGE"
+        chip_w = QtGui.QFontMetrics(fp).horizontalAdvance(chip) + 16
+        step_txt = ("%d" % self.step) if self.step else ""
+        step_w = (QtGui.QFontMetrics(fp).horizontalAdvance(step_txt) + 14) if step_txt else 0
+        lab_w = QtGui.QFontMetrics(f).horizontalAdvance(self.label)
+        tw = pad + chip_w + (step_w + 6 if step_w else 0) + 9 + lab_w + pad
+
+        # clamp to the monitor the TARGET sits on (never spill to an adjacent one)
         gc = QtCore.QPoint(self.t[0] + self.t[2] // 2, self.t[1] + self.t[3] // 2)
         _scr = QtWidgets.QApplication.screenAt(gc) or QtWidgets.QApplication.primaryScreen()
         _sb = _scr.geometry()
-        mb_l, mb_t = _sb.left() - self.sg.left(), _sb.top() - self.sg.top()
+        mb_l = _sb.left() - self.sg.left()
+        mb_t = _sb.top() - self.sg.top()
         mb_r, mb_b = mb_l + _sb.width(), mb_t + _sb.height()
-        tx, ty = x - 5, y + h + 14
+        tx, ty = x - 5, y + h + 16
+        above = False
         if ty + th > mb_b - 4:
-            ty = y - th - 14
+            ty = y - th - 16
+            above = True
         tx = max(mb_l + 4, min(tx, mb_r - tw - 6))
-        p.setBrush(INK)
+
+        # tail toward the target (clamped to the card width)
+        tail_cx = max(tx + 16, min(x + w // 2, tx + tw - 16))
+        # drop shadow
         p.setPen(QtCore.Qt.NoPen)
-        p.drawRoundedRect(tx, ty, tw, th, 9, 9)
-        p.setFont(fb)
-        p.setPen(EMBER)
-        p.drawText(tx + pad, ty + 22, "Nudge")
+        p.setBrush(QtGui.QColor(0, 0, 0, 120))
+        p.drawRoundedRect(tx + 1, ty + 3, tw, th, 11, 11)
+        # card + tail
+        p.setBrush(INK)
+        if above:
+            p.drawPolygon(QtGui.QPolygon([
+                QtCore.QPoint(tail_cx - 7, ty + th), QtCore.QPoint(tail_cx + 7, ty + th),
+                QtCore.QPoint(tail_cx, ty + th + 8)]))
+        else:
+            p.drawPolygon(QtGui.QPolygon([
+                QtCore.QPoint(tail_cx - 7, ty), QtCore.QPoint(tail_cx + 7, ty),
+                QtCore.QPoint(tail_cx, ty - 8)]))
+        p.setPen(QtGui.QPen(QtGui.QColor(255, 107, 53, 130), 1))
+        p.drawRoundedRect(tx, ty, tw, th, 11, 11)
+
+        # ember NUDGE chip
+        cx0 = tx + pad
+        cy0 = ty + (th - chip_h) // 2
+        p.setPen(QtCore.Qt.NoPen)
+        p.setBrush(EMBER)
+        p.drawRoundedRect(cx0, cy0, chip_w, chip_h, 6, 6)
+        p.setFont(fp)
+        p.setPen(QtGui.QColor("#0E0D0C"))
+        p.drawText(QtCore.QRect(cx0, cy0, chip_w, chip_h), QtCore.Qt.AlignCenter, chip)
+        textx = cx0 + chip_w + 9
+        # optional step badge
+        if step_w:
+            sx = cx0 + chip_w + 6
+            p.setBrush(QtGui.QColor(58, 53, 48))
+            p.drawRoundedRect(sx, cy0, step_w, chip_h, 6, 6)
+            p.setFont(fp)
+            p.setPen(BONE)
+            p.drawText(QtCore.QRect(sx, cy0, step_w, chip_h), QtCore.Qt.AlignCenter, step_txt)
+            textx = sx + step_w + 9
+        # instruction
         p.setFont(f)
         p.setPen(BONE)
-        p.drawText(tx + pad + QtGui.QFontMetrics(fb).horizontalAdvance("Nudge") + 8,
-                   ty + 22, self.label)
+        p.drawText(textx, ty + 21, self.label)
 
 
 # ===========================================================================
@@ -746,6 +836,32 @@ class HotkeyBridge(QtCore.QObject):
 
 
 # ===========================================================================
+# LogoMark -- tiny branded ember pointer glyph used as the bar's logo.
+# ===========================================================================
+class LogoMark(QtWidgets.QWidget):
+    def __init__(self, size=22):
+        super().__init__()
+        self.setFixedSize(size, size)
+
+    def paintEvent(self, _):
+        p = QtGui.QPainter(self)
+        p.setRenderHint(QtGui.QPainter.Antialiasing, True)
+        s = self.width()
+        p.setPen(QtCore.Qt.NoPen)
+        p.setBrush(QtGui.QColor(255, 107, 53, 40))     # soft ember disc
+        p.drawEllipse(0, 0, s, s)
+        p.setBrush(EMBER)                              # ghost-cursor arrow
+        p.setPen(QtGui.QPen(QtGui.QColor("#0E0D0C"), 1.2))
+        cx, cy = s * 0.30, s * 0.20
+        p.drawPolygon(QtGui.QPolygon([
+            QtCore.QPoint(int(cx), int(cy)),
+            QtCore.QPoint(int(cx + s * 0.46), int(cy + s * 0.30)),
+            QtCore.QPoint(int(cx + s * 0.20), int(cy + s * 0.34)),
+            QtCore.QPoint(int(cx + s * 0.30), int(cy + s * 0.60)),
+        ]))
+
+
+# ===========================================================================
 # ControlBar -- the interactive, draggable top-center command window.
 # Owns the engine loop state. All widget mutation happens here on the main
 # thread; blocking work is delegated to PlanWorker.
@@ -798,6 +914,13 @@ class ControlBar(QtWidgets.QWidget):
         self._watcher.setInterval(WATCH_MS)
         self._watcher.timeout.connect(self._watch_tick)
 
+        # status state machine -> drives the status dot colour + a soft pulse
+        self._state = "idle"
+        self._pulse_on = False
+        self._pulse = QtCore.QTimer(self)
+        self._pulse.setInterval(380)
+        self._pulse.timeout.connect(self._pulse_tick)
+
         self._build_ui()
         self._load_prefs()
         self.hotkeys.start()
@@ -813,45 +936,66 @@ class ControlBar(QtWidgets.QWidget):
 
         root = QtWidgets.QFrame(self)
         root.setObjectName("root")
+        self._root = root
+        # drop shadow for depth (needs margin room in the outer layout)
+        shadow = QtWidgets.QGraphicsDropShadowEffect(self)
+        shadow.setBlurRadius(38)
+        shadow.setColor(QtGui.QColor(0, 0, 0, 175))
+        shadow.setOffset(0, 10)
+        root.setGraphicsEffect(shadow)
+
         outer = QtWidgets.QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setContentsMargins(20, 16, 20, 22)
         outer.addWidget(root)
 
         lay = QtWidgets.QVBoxLayout(root)
-        lay.setContentsMargins(14, 10, 14, 12)
-        lay.setSpacing(8)
+        lay.setContentsMargins(16, 12, 16, 13)
+        lay.setSpacing(9)
 
+        # --- header row: logo + wordmark + task + actions ---
         row = QtWidgets.QHBoxLayout()
-        row.setSpacing(8)
-        title = QtWidgets.QLabel("Nudge OS")
+        row.setSpacing(9)
+        self.logo = LogoMark(22)
+        self.logo.setToolTip("Ctrl+Alt+N: show/hide   ·   Ctrl+Alt+X: stop   ·   Esc: stop")
+        title = QtWidgets.QLabel("Nudge")
         title.setObjectName("title")
-        title.setToolTip("Ctrl+Alt+N: show/hide   ·   Ctrl+Alt+X: stop   ·   Esc: stop")
+        titledim = QtWidgets.QLabel("OS")
+        titledim.setObjectName("titledim")
         self.task_edit = QtWidgets.QLineEdit()
+        self.task_edit.setObjectName("task")
         self.task_edit.setPlaceholderText("What do you want to do?")
+        self.task_edit.setClearButtonEnabled(True)
         self.task_edit.returnPressed.connect(self.on_guide)
         self.guide_btn = QtWidgets.QPushButton("Guide")
         self.guide_btn.setObjectName("guide")
+        self.guide_btn.setCursor(QtCore.Qt.PointingHandCursor)
         self.guide_btn.clicked.connect(self.on_guide)
         self.stop_btn = QtWidgets.QPushButton("Stop")
         self.stop_btn.setObjectName("stop")
+        self.stop_btn.setCursor(QtCore.Qt.PointingHandCursor)
         self.stop_btn.clicked.connect(self.on_stop)
+        row.addWidget(self.logo)
         row.addWidget(title)
+        row.addWidget(titledim)
+        row.addSpacing(4)
         row.addWidget(self.task_edit, 1)
         row.addWidget(self.guide_btn)
         row.addWidget(self.stop_btn)
         lay.addLayout(row)
 
-        # screen selector -- Auto follows the monitor the bar sits on
+        # --- options row: assist screen + auto-advance ---
         srow = QtWidgets.QHBoxLayout()
         srow.setSpacing(8)
-        slab = QtWidgets.QLabel("Assist screen:")
-        slab.setObjectName("status")
+        slab = QtWidgets.QLabel("Assist screen")
+        slab.setObjectName("muted")
         self.screen_combo = QtWidgets.QComboBox()
         self.screen_combo.setObjectName("screens")
+        self.screen_combo.setCursor(QtCore.Qt.PointingHandCursor)
         self._populate_screens()
         self.screen_combo.currentIndexChanged.connect(self._on_screen_changed)
         self.auto_chk = QtWidgets.QCheckBox("Auto-advance")
         self.auto_chk.setObjectName("autochk")
+        self.auto_chk.setCursor(QtCore.Qt.PointingHandCursor)
         self.auto_chk.setChecked(True)
         self.auto_chk.setToolTip("Move to the next step automatically when the "
                                  "screen changes (no click needed).")
@@ -861,45 +1005,91 @@ class ControlBar(QtWidgets.QWidget):
         srow.addWidget(self.auto_chk)
         lay.addLayout(srow)
 
+        # --- status row: state dot + message ---
+        strow = QtWidgets.QHBoxLayout()
+        strow.setSpacing(8)
+        self.status_dot = QtWidgets.QLabel()
+        self.status_dot.setObjectName("dot")
+        self.status_dot.setFixedSize(9, 9)
         self.status = QtWidgets.QLabel("Type a task and press Guide. I point, you click.")
         self.status.setObjectName("status")
         self.status.setWordWrap(True)
-        lay.addWidget(self.status)
+        strow.addWidget(self.status_dot, 0, QtCore.Qt.AlignVCenter)
+        strow.addWidget(self.status, 1)
+        lay.addLayout(strow)
 
-        self.setStyleSheet(
-            """
-            #root { background: rgba(18,20,26,242); border: 1px solid #FF6B35;
-                    border-radius: 14px; }
-            #title { color: #FF6B35; font: bold 14px 'Segoe UI'; }
-            QLineEdit { background: #0E0D0C; color: #F4F2EC; border: 1px solid #3a3530;
-                        border-radius: 8px; padding: 6px 9px; font: 12px 'Segoe UI';
-                        min-width: 300px; }
-            QLineEdit:focus { border: 1px solid #FF6B35; }
-            QPushButton { color: #F4F2EC; border: none; border-radius: 8px;
-                          padding: 6px 14px; font: bold 12px 'Segoe UI'; }
-            #guide { background: #FF6B35; color: #0E0D0C; }
-            #guide:hover { background: #ff7d4d; }
-            #stop { background: #2a2622; }
-            #stop:hover { background: #3a3530; }
-            #status { color: #b9b2a8; font: 11px 'Segoe UI'; }
-            #screens { background: #0E0D0C; color: #F4F2EC; border: 1px solid #3a3530;
-                       border-radius: 7px; padding: 3px 8px; font: 11px 'Segoe UI'; }
-            #screens QAbstractItemView { background: #15130f; color: #F4F2EC;
-                       selection-background-color: #FF6B35; selection-color: #0E0D0C; }
-            #autochk { color: #b9b2a8; font: 11px 'Segoe UI'; spacing: 6px; }
-            #autochk::indicator { width: 14px; height: 14px; border-radius: 4px;
-                       border: 1px solid #3a3530; background: #0E0D0C; }
-            #autochk::indicator:checked { background: #FF6B35; border: 1px solid #FF6B35; }
-            """
-        )
+        self.setStyleSheet(self._qss())
+        self._set_state("idle")
 
-        self.resize(560, 120)
+        self.resize(600, 150)
         scr = QtWidgets.QApplication.primaryScreen().geometry()
-        self.move(scr.center().x() - self.width() // 2, scr.top() + 16)
+        self.move(scr.center().x() - self.width() // 2, scr.top() + 18)
 
         # Esc stops guiding when the bar is focused (global stop is Ctrl+Alt+X)
         esc = QtWidgets.QShortcut(QtGui.QKeySequence("Escape"), self)
         esc.activated.connect(self.on_stop)
+
+    # ---- styling / status state ------------------------------------------
+    _STATE_COLORS = {
+        "idle": THEME["muted"], "thinking": THEME["ember"],
+        "waiting": THEME["warn"], "pointing": THEME["ember"],
+        "done": THEME["ok"], "error": THEME["err"],
+    }
+
+    def _qss(self):
+        css = """
+        #root { background: @panel@; border: 1px solid @edge@; border-radius: 16px; }
+        #title { color: @bone@; font: 800 15px 'Segoe UI'; }
+        #titledim { color: @ember@; font: 800 15px 'Segoe UI'; }
+        QLineEdit#task { background: @ink2@; color: @bone@; border: 1px solid @edge@;
+            border-radius: 9px; padding: 7px 11px; font: 13px 'Segoe UI'; min-width: 260px;
+            selection-background-color: @ember@; selection-color: @ink2@; }
+        QLineEdit#task:focus { border: 1px solid @ember@; }
+        QPushButton { color: @bone@; border: none; border-radius: 9px;
+            padding: 7px 16px; font: 700 12px 'Segoe UI'; }
+        #guide { background: @ember@; color: @ink2@; }
+        #guide:hover { background: @ember_hi@; }
+        #guide:pressed { background: @ember_dim@; }
+        #guide:disabled { background: #5A4434; color: #B89A86; }
+        #stop { background: #221F1B; color: @muted@; }
+        #stop:hover { background: #312C27; color: @bone@; }
+        #muted { color: @muted@; font: 11px 'Segoe UI'; }
+        #status { color: @muted@; font: 11px 'Segoe UI'; }
+        #screens { background: @ink2@; color: @bone@; border: 1px solid @edge@;
+            border-radius: 8px; padding: 4px 9px; font: 11px 'Segoe UI'; }
+        #screens::drop-down { border: none; width: 18px; }
+        #screens QAbstractItemView { background: #15130F; color: @bone@; outline: none;
+            border: 1px solid @edge@; selection-background-color: @ember@;
+            selection-color: @ink2@; }
+        #autochk { color: @muted@; font: 11px 'Segoe UI'; spacing: 6px; }
+        #autochk::indicator { width: 15px; height: 15px; border-radius: 5px;
+            border: 1px solid @edge@; background: @ink2@; }
+        #autochk::indicator:hover { border: 1px solid @ember@; }
+        #autochk::indicator:checked { background: @ember@; border: 1px solid @ember@; }
+        """
+        for k, v in THEME.items():
+            css = css.replace("@%s@" % k, v)
+        return css
+
+    def _set_state(self, state, text=None):
+        """Update the status dot colour (+ pulse for working states) and text."""
+        self._state = state
+        col = self._STATE_COLORS.get(state, THEME["muted"])
+        self.status_dot.setStyleSheet("background:%s; border-radius:4px;" % col)
+        if text is not None:
+            self.status.setText(text)
+        if state in ("thinking", "waiting"):
+            if not self._pulse.isActive():
+                self._pulse_on = True
+                self._pulse.start()
+        else:
+            self._pulse.stop()
+
+    def _pulse_tick(self):
+        self._pulse_on = not self._pulse_on
+        base = self._STATE_COLORS.get(self._state, THEME["ember"])
+        col = base if self._pulse_on else THEME["ink2"]
+        self.status_dot.setStyleSheet("background:%s; border-radius:4px;" % col)
 
     # ---- preferences / visibility -----------------------------------------
     def _load_prefs(self):
@@ -997,7 +1187,7 @@ class ControlBar(QtWidgets.QWidget):
         self._watch_prev = None
         self.bridge.start()
         _dbg("on_guide: started task=%r" % task)
-        self.status.setText("Looking at your screen...")
+        self._set_state("thinking", "Looking at your screen...")
         self._kick()
 
     def on_stop(self):
@@ -1009,7 +1199,7 @@ class ControlBar(QtWidgets.QWidget):
         self.overlay.clear()
         self.cur_target = None
         self._pending = False
-        self.status.setText("Stopped. Type a new task and press Guide.")
+        self._set_state("idle", "Stopped. Type a new task and press Guide.")
 
     def _on_global_click(self):
         # main thread (signal-marshalled). A click is one way to make progress;
@@ -1037,7 +1227,8 @@ class ControlBar(QtWidgets.QWidget):
         self.cur_target = None
         self.overlay.clear()  # drop the stale pointer immediately for feedback
         _dbg("register_progress: reason=%s" % reason)
-        self.status.setText(
+        self._set_state(
+            "thinking",
             "Got it - looking at the screen (a moment)..." if reason == "click"
             else "Looks like you did it - finding the next step...")
         self._begin_settle()
@@ -1071,7 +1262,7 @@ class ControlBar(QtWidgets.QWidget):
         if (not self._settle_hinted and self._settle_stable == 0
                 and self._settle_elapsed >= SETTLE_HINT_MS):
             self._settle_hinted = True
-            self.status.setText("Waiting for it to finish loading...")
+            self._set_state("waiting", "Waiting for it to finish loading...")
         settled = (self._settle_elapsed >= SETTLE_MIN_MS
                    and self._settle_stable >= SETTLE_STABLE)
         if settled or self._settle_elapsed >= SETTLE_MAX_MS:
@@ -1155,8 +1346,8 @@ class ControlBar(QtWidgets.QWidget):
         if self._pointed_gen != gen:
             self.step += 1
             self._pointed_gen = gen
-        self.overlay.point_at(mark["rect"], instr)
-        self.status.setText("Step %d · %s · %s" % (self.step, src, instr))
+        self.overlay.point_at(mark["rect"], instr, self.step)
+        self._set_state("pointing", "Step %d · %s · %s" % (self.step, src, instr))
         if rearm:
             self._watch_base = None
             self._watch_prev = None
@@ -1196,7 +1387,7 @@ class ControlBar(QtWidgets.QWidget):
         if not self.guiding:
             return
         if not result.get("ok"):
-            self.status.setText("Hit a snag scanning the screen. Try Guide again.")
+            self._set_state("error", "Hit a snag scanning the screen. Try Guide again.")
             return
         self.marks = result["marks"]
         pl = result["plan"] or {}
@@ -1206,7 +1397,8 @@ class ControlBar(QtWidgets.QWidget):
         if not self.marks:
             self.overlay.clear()
             self.cur_target = None
-            self.status.setText(
+            self._set_state(
+                "waiting",
                 "No detectable UI elements in this window (a vision add-on "
                 "would cover it) -- try the taskbar."
             )
@@ -1224,20 +1416,21 @@ class ControlBar(QtWidgets.QWidget):
             self.raise_()
             self.task_edit.clear()
             self.task_edit.setFocus()
-            self.status.setText("Done! Type your next task and press Guide.")
+            self._set_state("done", "Done! Type your next task and press Guide.")
             return
 
         idx = pl.get("index", -1)
         if idx is None or idx < 0 or idx >= len(self.marks):
             # foreground had nothing useful but the app is custom-drawn
             if fg == 0 and tb > 0:
-                self.status.setText(
+                self._set_state(
+                    "waiting",
                     "No detectable UI elements in this window (a vision add-on "
                     "would cover it) -- showing the taskbar instead."
                 )
                 idx = self.marks[0]["i"]
             else:
-                self.status.setText("Couldn't pick a target this round. Try Guide again.")
+                self._set_state("error", "Couldn't pick a target this round. Try Guide again.")
                 return
 
         target = self.marks[idx]
@@ -1250,7 +1443,7 @@ class ControlBar(QtWidgets.QWidget):
                 and self.cur_target.get("name") == target["name"]
                 and self.cur_target.get("rect") == target["rect"])
         if same:
-            self.status.setText("Step %d · %s · %s" % (self.step, src, instr))
+            self._set_state("pointing", "Step %d · %s · %s" % (self.step, src, instr))
         else:
             self._show_target(target, instr, src, result.get("gen"), rearm=True)
 
@@ -1344,6 +1537,37 @@ def run_selftest(task):
     return 0
 
 
+def run_shot(out_name="bar_shot.png"):
+    """Render the control bar over the live desktop and save a tight composited
+    PNG for visual QA. No Anthropic call. Exits after grabbing."""
+    app = QtWidgets.QApplication(sys.argv)
+    overlay = Overlay()
+    bar = ControlBar(overlay)
+    try:
+        bar.hotkeys.stop_listener()
+    except Exception:
+        pass
+    bar.show()
+    bar.raise_()
+    out = os.path.join(HERE, out_name)
+
+    def finish():
+        try:
+            g = bar.frameGeometry()
+            pad = 26
+            shot = QtWidgets.QApplication.primaryScreen().grabWindow(
+                0, g.left() - pad, g.top() - pad, g.width() + pad * 2, g.height() + pad * 2)
+            shot.save(out)
+            print("saved bar -> %s (%dx%d)" % (out, shot.width(), shot.height()))
+        except Exception:
+            traceback.print_exc()
+        app.quit()
+
+    QtCore.QTimer.singleShot(800, finish)
+    app.exec_()
+    return 0
+
+
 # ===========================================================================
 # main
 # ===========================================================================
@@ -1367,6 +1591,11 @@ def main():
     args = sys.argv[1:]
     if "--debug" in args:
         set_debug(True)
+    if "--version" in args:
+        print("%s %s" % (APP_NAME, APP_VERSION))
+        sys.exit(0)
+    if "--shot" in args:
+        sys.exit(run_shot())
     if "--selftest-local" in args:
         sys.exit(run_selftest_local())
     if "--selftest" in args:
