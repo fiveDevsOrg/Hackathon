@@ -108,7 +108,34 @@ def _walk(ctrl, depth, maxdepth, out, cap):
             return
 
 
-def scan_marks():
+def _taskbar_for_screen(screen_rect):
+    """The taskbar UIA control on `screen_rect` (left,top,w,h), else the primary.
+
+    Windows puts the primary taskbar in Shell_TrayWnd and each secondary
+    monitor's taskbar in its own Shell_SecondaryTrayWnd -- so on a multi-monitor
+    setup we must pick the one that lives on the screen we're assisting.
+    """
+    try:
+        cands = []
+        for c in _auto.GetRootControl().GetChildren():
+            cn = c.ClassName or ""
+            if cn in ("Shell_TrayWnd", "Shell_SecondaryTrayWnd"):
+                r = c.BoundingRectangle
+                cands.append((c, cn, (r.left + r.right) // 2, (r.top + r.bottom) // 2))
+        if screen_rect:
+            sl, st, sw, sh = screen_rect
+            for c, cn, cx, cy in cands:
+                if sl <= cx < sl + sw and st <= cy < st + sh:
+                    return c
+        for c, cn, cx, cy in cands:
+            if cn == "Shell_TrayWnd":
+                return c
+        return cands[0][0] if cands else None
+    except Exception:
+        return None
+
+
+def scan_marks(screen_rect=None):
     """Return (marks, fg_count, taskbar_count).
 
     marks: [{i, name, type, rect:(x,y,w,h)}] for the foreground window first,
@@ -132,10 +159,11 @@ def scan_marks():
             _walk(win, 0, 25, fg, 80)
     except Exception:
         traceback.print_exc()
-    # taskbar -- always include
+    # taskbar on the TARGET screen (primary, or a secondary monitor's taskbar)
     try:
-        tray = _auto.PaneControl(searchDepth=1, ClassName="Shell_TrayWnd")
-        _walk(tray, 0, 14, tb, 40)
+        tray = _taskbar_for_screen(screen_rect)
+        if tray is not None:
+            _walk(tray, 0, 14, tb, 40)
     except Exception:
         traceback.print_exc()
 
@@ -483,11 +511,12 @@ class Overlay(QtWidgets.QWidget):
 class PlanWorker(QtCore.QThread):
     finished = QtCore.pyqtSignal(dict)
 
-    def __init__(self, task, history, mon_index=1):
+    def __init__(self, task, history, mon_index=1, screen_rect=None):
         super().__init__()
         self.task = task
         self.history = list(history)
         self.mon_index = mon_index
+        self.screen_rect = screen_rect
 
     def run(self):
         result = {"ok": False, "marks": [], "plan": None, "fg": 0, "tb": 0, "error": ""}
@@ -499,7 +528,7 @@ class PlanWorker(QtCore.QThread):
         except Exception:
             pass
         try:
-            marks, fg, tb = scan_marks()
+            marks, fg, tb = scan_marks(self.screen_rect)
             _img, b64, _scale = grab_screen(self.mon_index)
             pl = plan(self.task, marks, self.history, b64)
             result.update({"ok": True, "marks": marks, "plan": pl, "fg": fg, "tb": tb})
@@ -767,7 +796,9 @@ class ControlBar(QtWidgets.QWidget):
             return
         self.guide_btn.setEnabled(False)
         _scr, mon = self._resolve_target_screen()
-        self.worker = PlanWorker(self.task, self.history, mon)
+        g = _scr.geometry()
+        rect = (g.left(), g.top(), g.width(), g.height())
+        self.worker = PlanWorker(self.task, self.history, mon, rect)
         self.worker.finished.connect(self._on_plan)
         self.worker.start()
 
