@@ -104,6 +104,13 @@ def build_tray(bar):
         act_show = menu.addAction("Show / Hide")
         act_show.triggered.connect(bar._toggle_visible)
 
+        # --- Pause / Resume -> keep task context, just stop/resume watching ---
+        try:
+            act_pause = menu.addAction("Pause / Resume")
+            act_pause.triggered.connect(bar._toggle_pause)
+        except Exception:
+            pass
+
         # --- Stop guiding -> reuse the bar's stop handler ---
         act_stop = menu.addAction("Stop guiding")
         act_stop.triggered.connect(bar.on_stop)

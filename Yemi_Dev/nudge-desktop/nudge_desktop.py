@@ -729,7 +729,7 @@ def plan(task, marks, history, img_b64, win_title=None, app_name=None,
                 "done": False, "source": "local"}
     if not has_api_key():
         fb = _heuristic(task, marks)
-        fb["source"] = "offline"
+        fb["source"] = "nokey"
         return fb
 
     lines = []
@@ -808,7 +808,7 @@ def plan(task, marks, history, img_b64, win_title=None, app_name=None,
     except Exception as ex:
         _logx("plan", ex)
         fb = _heuristic(task, marks)
-        fb["source"] = "offline"
+        fb["source"] = "apierror"
         return fb
 
 
@@ -1248,6 +1248,7 @@ class ClickBridge(QtCore.QObject):
 class HotkeyBridge(QtCore.QObject):
     toggle = QtCore.pyqtSignal()
     stop = QtCore.pyqtSignal()
+    pause = QtCore.pyqtSignal()
 
     def __init__(self):
         super().__init__()
@@ -1262,9 +1263,10 @@ class HotkeyBridge(QtCore.QObject):
             self._listener = keyboard.GlobalHotKeys({
                 "<ctrl>+<alt>+n": lambda: self.toggle.emit(),
                 "<ctrl>+<alt>+x": lambda: self.stop.emit(),
+                "<ctrl>+<alt>+p": lambda: self.pause.emit(),
             })
             self._listener.start()
-            _dbg("HotkeyBridge: started (Ctrl+Alt+N show/hide, Ctrl+Alt+X stop)")
+            _dbg("HotkeyBridge: started (Ctrl+Alt+N show/hide, X stop, P pause)")
         except Exception:
             traceback.print_exc()
             _dbg("HotkeyBridge: FAILED to start")
@@ -1327,7 +1329,10 @@ class ControlBar(QtWidgets.QWidget):
         self.hotkeys = HotkeyBridge()
         self.hotkeys.toggle.connect(self._toggle_visible)
         self.hotkeys.stop.connect(self.on_stop)
+        self.hotkeys.pause.connect(self._toggle_pause)
         self.guiding = False
+        self.paused = False
+        self.task = ""             # current task text (set by on_guide)
         self.history = []          # names of marks already pointed at/clicked
         self.marks = []            # current cycle's marks
         self.cur_target = None     # {name, rect} we are currently pointing at
@@ -1549,8 +1554,7 @@ class ControlBar(QtWidgets.QWidget):
 
         self.adjustSize()
         self.setFixedWidth(max(620, self.width()))
-        scr = QtWidgets.QApplication.primaryScreen().geometry()
-        self.move(scr.center().x() - self.width() // 2, scr.top() + 18)
+        self._restore_position()
 
         # Esc stops guiding when the bar is focused (global stop is Ctrl+Alt+X)
         esc = QtWidgets.QShortcut(QtGui.QKeySequence("Escape"), self)
@@ -1682,6 +1686,30 @@ class ControlBar(QtWidgets.QWidget):
         except Exception:
             _logx("load_prefs.cfg", "")
 
+    def _restore_position(self):
+        """Restore the saved bar position (clamped to a visible screen), else
+        center it on the primary screen near the top."""
+        scr = QtWidgets.QApplication.primaryScreen().geometry()
+        dx, dy = scr.center().x() - self.width() // 2, scr.top() + 18
+        pos = self._cfg_get("bar_pos", None)
+        if isinstance(pos, (list, tuple)) and len(pos) == 2:
+            try:
+                x, y = int(pos[0]), int(pos[1])
+                probe = QtCore.QPoint(x + 40, y + 20)
+                if any(s.geometry().contains(probe)
+                       for s in QtWidgets.QApplication.screens()):
+                    dx, dy = x, y
+            except Exception:
+                pass
+        self.move(dx, dy)
+
+    def _save_position(self):
+        try:
+            p = self.frameGeometry().topLeft()
+            self._cfg_set("bar_pos", [p.x(), p.y()])
+        except Exception:
+            pass
+
     def _toggle_visible(self):
         """Ctrl+Alt+N -- hide the bar if shown, else summon + focus it."""
         if self.isVisible():
@@ -1719,6 +1747,7 @@ class ControlBar(QtWidgets.QWidget):
             self._watcher.stop()
             self._settle.stop()
             self._pulse.stop()
+            self._save_position()
             self._drain_workers()
             if _tts is not None:
                 try:
@@ -1776,6 +1805,8 @@ class ControlBar(QtWidgets.QWidget):
             e.accept()
 
     def mouseReleaseEvent(self, e):
+        if self._dragging:
+            self._save_position()
         self._dragging = False
 
     # ---- engine loop ------------------------------------------------------
@@ -1796,6 +1827,7 @@ class ControlBar(QtWidgets.QWidget):
         self._est_total = 4
         self._clear_route()
         self.guiding = True
+        self.paused = False
         self.bridge.start()
         _dbg("on_guide: started task=%r" % task)
         self._set_state("thinking", "Looking at your screen...")
@@ -1823,6 +1855,7 @@ class ControlBar(QtWidgets.QWidget):
 
     def on_stop(self):
         self.guiding = False
+        self.paused = False
         self._gen += 1            # invalidate any in-flight plan/confirm
         self._reset_engine_state()
         self.bridge.stop()
@@ -1831,6 +1864,26 @@ class ControlBar(QtWidgets.QWidget):
         self.explain_btn.setEnabled(False)
         self._clear_route()
         self._set_state("idle", "Stopped. Type a new task and press Guide.")
+
+    def _toggle_pause(self):
+        """Pause keeps the task/history/step/route intact but stops watching and
+        clears the pointer so you can borrow the mouse; Resume re-plans from the
+        current screen. (Stop, by contrast, wipes the task.)"""
+        if not self.guiding and not self.paused:
+            return
+        if not self.paused:
+            self.paused = True
+            self._gen += 1            # supersede any in-flight cycle
+            self._reset_engine_state()
+            self.bridge.stop()
+            self.overlay.clear()
+            self.explain_btn.setEnabled(False)
+            self._set_state("waiting", "Paused - press Ctrl+Alt+P to resume.")
+        else:
+            self.paused = False
+            self.bridge.start()
+            self._set_state("thinking", "Resuming...")
+            self._kick()
 
     @guard
     def _on_global_click(self):
@@ -1846,7 +1899,7 @@ class ControlBar(QtWidgets.QWidget):
         screen change). Record it and re-plan after the UI settles. Guards make
         it safe to call from both the click signal and the watcher tick.
         """
-        if not self.guiding or self._pending:
+        if not self.guiding or self._pending or self.paused:
             return
         self._pending = True
         self._gen += 1            # supersede any in-flight plan/confirm
@@ -1913,7 +1966,7 @@ class ControlBar(QtWidgets.QWidget):
     def _watch_tick(self):
         """Sample the region around the current target; auto-advance once it has
         changed from the baseline AND stopped moving (the action completed)."""
-        if not self.guiding or self._pending or not self.cur_target:
+        if not self.guiding or self._pending or self.paused or not self.cur_target:
             return
         rect = self.cur_target.get("rect")
         if not rect:
@@ -2215,7 +2268,8 @@ class ControlBar(QtWidgets.QWidget):
     def _on_prelim(self, result):
         """Instant optimistic pointer the moment the scan + heuristic land, for
         confident matches -- before the vision call returns."""
-        if result.get("gen") != self._gen or not self.guiding or self._pending:
+        if (result.get("gen") != self._gen or not self.guiding or self._pending
+                or self.paused):
             return
         if not result.get("confident"):
             return  # ambiguous -> wait for the authoritative vision plan
