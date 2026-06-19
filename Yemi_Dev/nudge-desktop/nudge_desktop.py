@@ -166,6 +166,19 @@ def scan_marks():
 # ===========================================================================
 # Screen grab -- mss + PIL, downscaled, base64 PNG
 # ===========================================================================
+import os as _os
+
+_DBG = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "debug.log")
+
+
+def _dbg(msg):
+    try:
+        with open(_DBG, "a", encoding="utf-8") as f:
+            f.write(str(msg) + "\n")
+    except Exception:
+        pass
+
+
 def mss_index_for(qgeom):
     """Map a Qt QScreen.geometry() to an mss monitor index (1-based). 1 on miss."""
     try:
@@ -523,12 +536,15 @@ class ClickBridge(QtCore.QObject):
             def on_click(x, y, button, pressed):
                 # runs on the listener thread -- only emit, never touch Qt
                 if pressed:
+                    _dbg("CLICK caught (%d,%d)" % (x, y))
                     self.clicked.emit()
 
             self._listener = mouse.Listener(on_click=on_click)
             self._listener.start()
+            _dbg("ClickBridge: listener started, running=%s" % self._listener.running)
         except Exception:
             traceback.print_exc()
+            _dbg("ClickBridge: FAILED to start listener")
             self._listener = None
 
     def stop(self):
@@ -709,6 +725,7 @@ class ControlBar(QtWidgets.QWidget):
         self.step = 0
         self.guiding = True
         self.bridge.start()
+        _dbg("on_guide: started task=%r" % task)
         self.status.setText("Looking at your screen...")
         self._kick()
 
@@ -722,6 +739,8 @@ class ControlBar(QtWidgets.QWidget):
 
     def _on_global_click(self):
         # main thread (signal-marshalled). Only react while guiding and idle.
+        _dbg("on_global_click: guiding=%s worker_running=%s" % (
+            self.guiding, (self.worker is not None and self.worker.isRunning())))
         if not self.guiding:
             return
         if self.worker is not None and self.worker.isRunning():
@@ -731,15 +750,19 @@ class ControlBar(QtWidgets.QWidget):
             nm = self.cur_target["name"]
             if not self.history or self.history[-1] != nm:
                 self.history.append(nm)
-        self.status.setText("Got it -- re-checking the screen...")
+        self.cur_target = None
+        self.overlay.clear()  # drop the stale pointer immediately for feedback
+        self.status.setText("Got it - looking at the screen (a moment)...")
         self._debounce.start()
 
     def _advance(self):
+        _dbg("advance: guiding=%s" % self.guiding)
         if self.guiding:
             self._kick()
 
     def _kick(self):
         """Start a background capture+scan+plan cycle (non-blocking)."""
+        _dbg("kick")
         if self.worker is not None and self.worker.isRunning():
             return
         self.guide_btn.setEnabled(False)
@@ -750,6 +773,10 @@ class ControlBar(QtWidgets.QWidget):
 
     def _on_plan(self, result):
         # back on the main thread
+        _pl = result.get("plan") or {}
+        _dbg("on_plan: ok=%s marks=%d idx=%s done=%s" % (
+            result.get("ok"), len(result.get("marks", [])),
+            _pl.get("index"), _pl.get("done")))
         self.guide_btn.setEnabled(True)
         if not self.guiding:
             return
