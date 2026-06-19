@@ -52,7 +52,6 @@ BONE = QtGui.QColor("#F4F2EC")
 MODEL = "claude-haiku-4-5-20251001"
 MAX_MARKS = 60          # cap on elements sent to the planner
 TARGET_W = 1280         # screenshot downscale width sent to the model
-DEBOUNCE_MS = 750       # let the UI settle after a click before re-planning
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 # ---- auto-advance watcher tuning ------------------------------------------
@@ -63,6 +62,15 @@ WATCH_CHANGE = 0.18     # fraction of the region that must differ vs the
                         #  enough to ignore a hover highlight)
 WATCH_SETTLE = 0.06     # once changed, advance only when consecutive frames
                         # are this close -- i.e. the screen stopped moving
+
+# ---- post-action settle tuning (wait for a program to finish loading) -----
+SETTLE_POLL_MS = 300    # how often to check whether the screen has settled
+SETTLE_MIN_MS = 450     # always wait at least this long before re-planning
+SETTLE_MAX_MS = 9000    # but never wait longer than this (cap for slow loads)
+SETTLE_STABLE = 2       # this many consecutive quiet polls => settled
+SETTLE_TOL = 0.05       # frame-to-frame diff below this == "not moving"
+SETTLE_HINT_MS = 1200   # after this long still moving, tell the user we're
+                        # waiting for it to load
 
 
 # ===========================================================================
@@ -767,11 +775,17 @@ class ControlBar(QtWidgets.QWidget):
         self._pointed_gen = -1     # gen we've already counted a step for
         self._inflight = []        # running PlanWorkers (kept alive until done)
 
-        # debounce timer: re-plan only after the UI settles post-click
-        self._debounce = QtCore.QTimer(self)
-        self._debounce.setSingleShot(True)
-        self._debounce.setInterval(DEBOUNCE_MS)
-        self._debounce.timeout.connect(self._advance)
+        # post-action settle: after a click/auto-advance, wait for the screen to
+        # STOP changing (a program may take time to load) before re-planning, so
+        # we never plan against a half-loaded screen or re-point the last step.
+        self._settle = QtCore.QTimer(self)
+        self._settle.setInterval(SETTLE_POLL_MS)
+        self._settle.timeout.connect(self._settle_tick)
+        self._settle_prev = None     # last settle fingerprint
+        self._settle_stable = 0      # consecutive quiet polls
+        self._settle_elapsed = 0     # ms waited so far this settle
+        self._settle_rect = None     # assist-screen rect being watched
+        self._settle_hinted = False  # showed the "still loading" hint yet
 
         # auto-advance: watch the screen near the target and move on when the
         # user completes the step (click OR keyboard OR anything), so we don't
@@ -913,7 +927,7 @@ class ControlBar(QtWidgets.QWidget):
             self.bridge.stop()
             self.hotkeys.stop_listener()
             self._watcher.stop()
-            self._debounce.stop()
+            self._settle.stop()
             self.settings.sync()
         except Exception:
             pass
@@ -989,7 +1003,7 @@ class ControlBar(QtWidgets.QWidget):
     def on_stop(self):
         self.guiding = False
         self._gen += 1            # invalidate any in-flight plan/confirm
-        self._debounce.stop()
+        self._settle.stop()
         self._watcher.stop()
         self.bridge.stop()
         self.overlay.clear()
@@ -1026,7 +1040,46 @@ class ControlBar(QtWidgets.QWidget):
         self.status.setText(
             "Got it - looking at the screen (a moment)..." if reason == "click"
             else "Looks like you did it - finding the next step...")
-        self._debounce.start()
+        self._begin_settle()
+
+    def _begin_settle(self):
+        """Start waiting for the screen to stop changing before re-planning."""
+        self._settle_prev = None
+        self._settle_stable = 0
+        self._settle_elapsed = 0
+        self._settle_hinted = False
+        _scr, _ = self._resolve_target_screen()
+        g = _scr.geometry()
+        self._settle_rect = (g.left(), g.top(), g.width(), g.height())
+        self._settle.start()
+
+    def _settle_tick(self):
+        """Poll the assist screen; re-plan once it has been quiet for a couple
+        of polls (program finished loading) or we hit the max-wait cap."""
+        if not self.guiding:
+            self._settle.stop()
+            return
+        self._settle_elapsed += SETTLE_POLL_MS
+        cur = region_hash(self._settle_rect, pad=0, cells=32)
+        if self._settle_prev is not None:
+            if hash_diff(cur, self._settle_prev) <= SETTLE_TOL:
+                self._settle_stable += 1
+            else:
+                self._settle_stable = 0  # still moving -> reset
+        self._settle_prev = cur
+        # let the user know we're deliberately waiting on a slow load
+        if (not self._settle_hinted and self._settle_stable == 0
+                and self._settle_elapsed >= SETTLE_HINT_MS):
+            self._settle_hinted = True
+            self.status.setText("Waiting for it to finish loading...")
+        settled = (self._settle_elapsed >= SETTLE_MIN_MS
+                   and self._settle_stable >= SETTLE_STABLE)
+        if settled or self._settle_elapsed >= SETTLE_MAX_MS:
+            self._settle.stop()
+            _dbg("settle: done elapsed=%dms stable=%d capped=%s" % (
+                self._settle_elapsed, self._settle_stable,
+                self._settle_elapsed >= SETTLE_MAX_MS))
+            self._advance()
 
     def _watch_tick(self):
         """Sample the region around the current target; auto-advance once it has
