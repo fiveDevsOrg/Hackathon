@@ -69,6 +69,13 @@ try:
     import prompts as _prompts
 except Exception:
     _prompts = None
+# UI / feature modules -- all guarded; any missing one just disables its feature
+for _m in ("icons", "presets", "tray", "tts", "autostart", "onboarding",
+           "updatecheck", "explain", "planner_preview"):
+    try:
+        globals()["_" + _m] = __import__(_m)
+    except Exception:
+        globals()["_" + _m] = None
 
 # ---- branding --------------------------------------------------------------
 APP_NAME = getattr(_version, "__appname__", "Nudge OS")
@@ -740,6 +747,7 @@ class Overlay(QtWidgets.QWidget):
         self.key_label = None  # keyboard-step hint (e.g. "Press  Win+R")
         self.key_geom = None   # QRect of the screen to center the keycap on
         self._phase = 0.0     # 0..1 animation phase for the breathing ring
+        self._intensity = 1.0  # user-tunable ring/glow scale (0.5..1.5)
         self.setWindowFlags(
             QtCore.Qt.FramelessWindowHint
             | QtCore.Qt.WindowStaysOnTopHint
@@ -792,6 +800,13 @@ class Overlay(QtWidgets.QWidget):
         self._anim.stop()
         self.update()
 
+    def set_intensity(self, level):
+        try:
+            self._intensity = max(0.4, min(1.8, float(level)))
+            self.update()
+        except Exception:
+            pass
+
     @guard
     def paintEvent(self, _):
         p = QtGui.QPainter(self)
@@ -830,17 +845,20 @@ class Overlay(QtWidgets.QWidget):
         x -= self.sg.left()
         y -= self.sg.top()
 
-        # breathing factor (smooth 0..1 via cosine)
+        # breathing factor (smooth 0..1 via cosine), scaled by user intensity
+        k = self._intensity
         b = 0.5 - 0.5 * math.cos(self._phase * 2 * math.pi)
         glow_pad = 6 + int(9 * b)
-        glow_alpha = int(45 + 80 * b)
+        glow_alpha = max(0, min(255, int((45 + 80 * b) * k)))
+        ring_w = max(2, int(round(3 * k)))
+        glow_w = max(5, int(round(9 * k)))
 
         # outer breathing glow + crisp inner ring
         p.setBrush(QtCore.Qt.NoBrush)
-        p.setPen(QtGui.QPen(QtGui.QColor(255, 107, 53, glow_alpha), 9))
+        p.setPen(QtGui.QPen(QtGui.QColor(255, 107, 53, glow_alpha), glow_w))
         p.drawRoundedRect(x - glow_pad, y - glow_pad,
                           w + glow_pad * 2, h + glow_pad * 2, 14, 14)
-        p.setPen(QtGui.QPen(EMBER, 3))
+        p.setPen(QtGui.QPen(EMBER, ring_w))
         p.drawRoundedRect(x - 5, y - 5, w + 10, h + 10, 10, 10)
 
         # ghost cursor (arrow) just off the target's corner
@@ -1109,6 +1127,9 @@ class ControlBar(QtWidgets.QWidget):
         self.overlay = overlay
         self.worker = None
         self.settings = QtCore.QSettings("NudgeOS", "NudgeOS")
+        self.cfg = _CFG  # JSON config (settings.py) for the newer options
+        self._recent = []
+        self._explainer = None  # keep ExplainWorker referenced
         self.bridge = ClickBridge()
         self.bridge.clicked.connect(self._on_global_click)
         self.hotkeys = HotkeyBridge()
@@ -1194,10 +1215,13 @@ class ControlBar(QtWidgets.QWidget):
         # --- header row: logo + wordmark + task + actions ---
         row = QtWidgets.QHBoxLayout()
         row.setSpacing(9)
+        _tip = ("%s v%s   ·   Ctrl+Alt+N show/hide   ·   Ctrl+Alt+X stop   ·   Esc stop"
+                % (APP_NAME, APP_VERSION))
         self.logo = LogoMark(22)
-        self.logo.setToolTip("Ctrl+Alt+N: show/hide   ·   Ctrl+Alt+X: stop   ·   Esc: stop")
+        self.logo.setToolTip(_tip)
         title = QtWidgets.QLabel("Nudge")
         title.setObjectName("title")
+        title.setToolTip(_tip)
         titledim = QtWidgets.QLabel("OS")
         titledim.setObjectName("titledim")
         self.task_edit = QtWidgets.QLineEdit()
@@ -1213,6 +1237,14 @@ class ControlBar(QtWidgets.QWidget):
         self.stop_btn.setObjectName("stop")
         self.stop_btn.setCursor(QtCore.Qt.PointingHandCursor)
         self.stop_btn.clicked.connect(self.on_stop)
+        if _icons is not None:
+            try:
+                self.guide_btn.setIcon(_icons.play_icon())
+                self.guide_btn.setIconSize(QtCore.QSize(13, 13))
+                self.stop_btn.setIcon(_icons.stop_icon())
+                self.stop_btn.setIconSize(QtCore.QSize(12, 12))
+            except Exception:
+                pass
         row.addWidget(self.logo)
         row.addWidget(title)
         row.addWidget(titledim)
@@ -1221,6 +1253,19 @@ class ControlBar(QtWidgets.QWidget):
         row.addWidget(self.guide_btn)
         row.addWidget(self.stop_btn)
         lay.addLayout(row)
+
+        # --- presets: one-click common tasks ---
+        if _presets is not None and getattr(_presets, "PRESETS", None):
+            prow = QtWidgets.QHBoxLayout()
+            prow.setSpacing(6)
+            for label, task in _presets.PRESETS[:6]:
+                chip = QtWidgets.QPushButton(label)
+                chip.setObjectName("chip")
+                chip.setCursor(QtCore.Qt.PointingHandCursor)
+                chip.clicked.connect(self._make_preset(task))
+                prow.addWidget(chip)
+            prow.addStretch(1)
+            lay.addLayout(prow)
 
         # --- options row: assist screen + auto-advance ---
         srow = QtWidgets.QHBoxLayout()
@@ -1239,9 +1284,23 @@ class ControlBar(QtWidgets.QWidget):
         self.auto_chk.setToolTip("Move to the next step automatically when the "
                                  "screen changes (no click needed).")
         self.auto_chk.toggled.connect(self._on_auto_toggled)
+        self.tts_chk = QtWidgets.QCheckBox("Speak")
+        self.tts_chk.setObjectName("autochk")
+        self.tts_chk.setCursor(QtCore.Qt.PointingHandCursor)
+        self.tts_chk.setToolTip("Read each step aloud (text-to-speech).")
+        self.tts_chk.setEnabled(_tts is not None and _tts.available())
+        self.tts_chk.toggled.connect(self._on_tts_toggled)
+        self.autostart_chk = QtWidgets.QCheckBox("Start w/ Windows")
+        self.autostart_chk.setObjectName("autochk")
+        self.autostart_chk.setCursor(QtCore.Qt.PointingHandCursor)
+        self.autostart_chk.setToolTip("Launch Nudge OS automatically at sign-in.")
+        self.autostart_chk.setEnabled(_autostart is not None)
+        self.autostart_chk.toggled.connect(self._on_autostart_toggled)
         srow.addWidget(slab)
         srow.addWidget(self.screen_combo, 1)
         srow.addWidget(self.auto_chk)
+        srow.addWidget(self.tts_chk)
+        srow.addWidget(self.autostart_chk)
         lay.addLayout(srow)
 
         # --- status row: state dot + message ---
@@ -1253,14 +1312,32 @@ class ControlBar(QtWidgets.QWidget):
         self.status = QtWidgets.QLabel("Type a task and press Guide. I point, you click.")
         self.status.setObjectName("status")
         self.status.setWordWrap(True)
+        self.explain_btn = QtWidgets.QToolButton()
+        self.explain_btn.setObjectName("explain")
+        self.explain_btn.setText("?")
+        self.explain_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        self.explain_btn.setToolTip("Explain the current step")
+        self.explain_btn.setEnabled(False)
+        self.explain_btn.clicked.connect(self._on_explain)
+        self.intensity = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.intensity.setObjectName("intensity")
+        self.intensity.setRange(50, 150)
+        self.intensity.setValue(100)
+        self.intensity.setFixedWidth(82)
+        self.intensity.setCursor(QtCore.Qt.PointingHandCursor)
+        self.intensity.setToolTip("Pointer intensity")
+        self.intensity.valueChanged.connect(self._on_intensity)
         strow.addWidget(self.status_dot, 0, QtCore.Qt.AlignVCenter)
         strow.addWidget(self.status, 1)
+        strow.addWidget(self.explain_btn, 0)
+        strow.addWidget(self.intensity, 0)
         lay.addLayout(strow)
 
         self.setStyleSheet(self._qss())
         self._set_state("idle")
 
-        self.resize(600, 150)
+        self.adjustSize()
+        self.setFixedWidth(max(620, self.width()))
         scr = QtWidgets.QApplication.primaryScreen().geometry()
         self.move(scr.center().x() - self.width() // 2, scr.top() + 18)
 
@@ -1305,6 +1382,20 @@ class ControlBar(QtWidgets.QWidget):
             border: 1px solid @edge@; background: @ink2@; }
         #autochk::indicator:hover { border: 1px solid @ember@; }
         #autochk::indicator:checked { background: @ember@; border: 1px solid @ember@; }
+        #chip { background: #221F1B; color: @muted@; border: 1px solid @edge@;
+            border-radius: 11px; padding: 3px 11px; font: 600 10px 'Segoe UI'; }
+        #chip:hover { background: #312C27; color: @bone@; border: 1px solid @ember@; }
+        #explain { color: @ember@; background: #221F1B; border: 1px solid @edge@;
+            border-radius: 9px; font: 800 11px 'Segoe UI'; min-width: 16px;
+            max-width: 18px; padding: 1px 0; }
+        #explain:hover { background: #312C27; border: 1px solid @ember@; }
+        #explain:disabled { color: #5a544c; border: 1px solid #2a2622; }
+        #intensity::groove:horizontal { height: 4px; background: @ink2@;
+            border-radius: 2px; }
+        #intensity::sub-page:horizontal { background: @ember@; border-radius: 2px; }
+        #intensity::handle:horizontal { background: @bone@; width: 11px;
+            margin: -4px 0; border-radius: 5px; }
+        #intensity::handle:horizontal:hover { background: @ember_hi@; }
         """
         for k, v in THEME.items():
             css = css.replace("@%s@" % k, v)
@@ -1333,7 +1424,8 @@ class ControlBar(QtWidgets.QWidget):
 
     # ---- preferences / visibility -----------------------------------------
     def _load_prefs(self):
-        """Restore the saved Assist-screen and Auto-advance choices."""
+        """Restore saved choices (QSettings for the original two keys; the JSON
+        config for the newer options)."""
         try:
             auto = self.settings.value("auto_advance", True, type=bool)
             self.auto_chk.setChecked(auto)  # no-op if already True; else fires toggle
@@ -1341,7 +1433,31 @@ class ControlBar(QtWidgets.QWidget):
             if 0 <= sidx < self.screen_combo.count():
                 self.screen_combo.setCurrentIndex(sidx)
         except Exception:
-            traceback.print_exc()
+            _logx("load_prefs.qsettings", "")
+        # newer options from the JSON config
+        try:
+            inten = int(self._cfg_get("overlay_intensity", 100))
+            self.intensity.blockSignals(True)
+            self.intensity.setValue(max(50, min(150, inten)))
+            self.intensity.blockSignals(False)
+            self.overlay.set_intensity(self.intensity.value() / 100.0)
+
+            if self.tts_chk.isEnabled():
+                self.tts_chk.blockSignals(True)
+                self.tts_chk.setChecked(bool(self._cfg_get("tts_on", False)))
+                self.tts_chk.blockSignals(False)
+
+            if self.autostart_chk.isEnabled() and _autostart is not None:
+                self.autostart_chk.blockSignals(True)
+                self.autostart_chk.setChecked(bool(_autostart.is_autostart()))
+                self.autostart_chk.blockSignals(False)
+
+            self._recent = list(self._cfg_get("recent_tasks", []) or [])
+            self._completer = QtWidgets.QCompleter(self._recent, self)
+            self._completer.setCaseSensitivity(QtCore.Qt.CaseInsensitive)
+            self.task_edit.setCompleter(self._completer)
+        except Exception:
+            _logx("load_prefs.cfg", "")
 
     def _toggle_visible(self):
         """Ctrl+Alt+N -- hide the bar if shown, else summon + focus it."""
@@ -1373,6 +1489,11 @@ class ControlBar(QtWidgets.QWidget):
             self._settle.stop()
             self._pulse.stop()
             self._drain_workers()
+            if _tts is not None:
+                try:
+                    _tts.shutdown()
+                except Exception:
+                    pass
             self.settings.sync()
         except Exception:
             pass
@@ -1433,6 +1554,7 @@ class ControlBar(QtWidgets.QWidget):
             self.status.setText("Enter a task first.")
             return
         self.task = task
+        self._record_recent(task)
         self.history = []
         self.step = 0
         self._pointed_gen = -1
@@ -1456,6 +1578,7 @@ class ControlBar(QtWidgets.QWidget):
         self.overlay.clear()
         self.cur_target = None
         self._pending = False
+        self.explain_btn.setEnabled(False)
         self._set_state("idle", "Stopped. Type a new task and press Guide.")
 
     @guard
@@ -1484,6 +1607,7 @@ class ControlBar(QtWidgets.QWidget):
                 self.history.append(nm)
             self.history = self.history[-HISTORY_CAP:]  # bound prompt + memory
         self.cur_target = None
+        self.explain_btn.setEnabled(False)
         self.overlay.clear()  # drop the stale pointer immediately for feedback
         _dbg("register_progress: reason=%s" % reason)
         self._set_state(
@@ -1578,6 +1702,88 @@ class ControlBar(QtWidgets.QWidget):
                 self._watcher.start()
             self.status.setText("Auto-advance on - I'll move ahead when the screen changes.")
 
+    # ---- feature handlers -------------------------------------------------
+    def _cfg_get(self, key, default=None):
+        try:
+            return self.cfg.get(key, default) if self.cfg else default
+        except Exception:
+            return default
+
+    def _cfg_set(self, key, value):
+        try:
+            if self.cfg:
+                self.cfg.set(key, value)
+        except Exception:
+            pass
+
+    def _make_preset(self, task):
+        def go():
+            self.task_edit.setText(task)
+            self.on_guide()
+        return go
+
+    def _on_tts_toggled(self, on):
+        self._cfg_set("tts_on", bool(on))
+        if on and _tts is not None:
+            try:
+                _tts.speak("Speech on.")
+            except Exception:
+                pass
+
+    def _on_autostart_toggled(self, on):
+        ok = False
+        if _autostart is not None:
+            try:
+                ok = _autostart.set_autostart(bool(on))
+            except Exception:
+                ok = False
+        self._cfg_set("autostart", bool(on))
+        self._set_state("idle", "Start with Windows: %s" % ("on" if (on and ok) else "off"))
+
+    def _on_intensity(self, v):
+        try:
+            self.overlay.set_intensity(v / 100.0)
+        except Exception:
+            pass
+        self._cfg_set("overlay_intensity", int(v))
+
+    def _on_explain(self):
+        if not self.cur_target or _explain is None:
+            return
+        name = self.cur_target.get("name", "")
+        self.explain_btn.setEnabled(False)
+        try:
+            self._explainer = _explain.ExplainWorker(self.task, name, self.history, self._gen)
+            self._explainer.explained.connect(self._on_explained)
+            self._explainer.start()
+            self.status.setText("Explaining this step...")
+        except Exception:
+            self.explain_btn.setEnabled(True)
+
+    @guard
+    def _on_explained(self, text, gen):
+        self.explain_btn.setEnabled(self.cur_target is not None)
+        if text and self.guiding:
+            self.status.setText("Why: " + text)
+
+    def _record_recent(self, task):
+        try:
+            self._recent = ([task] + [t for t in self._recent if t != task])[:10]
+            self._cfg_set("recent_tasks", self._recent)
+            c = getattr(self, "_completer", None)
+            if c is not None:
+                c.model().setStringList(self._recent)
+        except Exception:
+            pass
+
+    def _speak_step(self, instr):
+        if _tts is None or not getattr(self, "tts_chk", None) or not self.tts_chk.isChecked():
+            return
+        try:
+            _tts.speak("Step %d. %s" % (self.step, instr))
+        except Exception:
+            pass
+
     def _advance(self):
         _dbg("advance: guiding=%s" % self.guiding)
         if self.guiding:
@@ -1638,6 +1844,8 @@ class ControlBar(QtWidgets.QWidget):
                             "Stop and rephrase, or click the highlighted item.")
             return
         self._set_state("pointing", "Step %d · %s · %s" % (self.step, src, instr))
+        self.explain_btn.setEnabled(_explain is not None)
+        self._speak_step(instr)
         if rearm:
             self._watch_base = None
             self._watch_prev = None
@@ -1657,6 +1865,8 @@ class ControlBar(QtWidgets.QWidget):
         g = scr.geometry()
         self.cur_target = {"name": label, "rect": (g.left(), g.top(), g.width(), g.height())}
         self.overlay.show_key(label, g)
+        self.explain_btn.setEnabled(False)
+        self._speak_step(label)
         self._set_state("pointing", "Step %d · key · %s" % (self.step, label))
         self._watch_base = None
         self._watch_prev = None
@@ -1887,13 +2097,98 @@ def run_shot(out_name="bar_shot.png"):
 # ===========================================================================
 # main
 # ===========================================================================
+def _single_instance(app):
+    """Return a QLocalServer (we are the first instance), False (another is
+    running -> we pinged it to show and should exit), or None (unavailable)."""
+    try:
+        from PyQt5 import QtNetwork
+    except Exception:
+        return None
+    name = "NudgeOS-singleton"
+    try:
+        sock = QtNetwork.QLocalSocket()
+        sock.connectToServer(name)
+        if sock.waitForConnected(150):
+            try:
+                sock.write(b"show")
+                sock.flush()
+                sock.waitForBytesWritten(150)
+            except Exception:
+                pass
+            sock.disconnectFromServer()
+            return False
+        QtNetwork.QLocalServer.removeServer(name)  # clear a stale server
+        server = QtNetwork.QLocalServer()
+        server.listen(name)
+        return server
+    except Exception:
+        return None
+
+
 def run_app():
     app = QtWidgets.QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(True)
+    if _icons is not None:
+        try:
+            app.setWindowIcon(_icons.app_icon())
+        except Exception:
+            pass
+
+    server = _single_instance(app)
+    if server is False:
+        return 0  # another instance is already running; we asked it to surface
+
     overlay = Overlay()           # click-through pointer (hidden until pointed)
     bar = ControlBar(overlay)     # interactive command window
+    if _icons is not None:
+        try:
+            bar.setWindowIcon(_icons.app_icon())
+        except Exception:
+            pass
     bar.show()
     bar.raise_()
+    app.aboutToQuit.connect(bar.close)  # ensure worker/timer cleanup on Quit
+
+    # surface the bar when a second launch pings the local server
+    if server is not None:
+        try:
+            server.newConnection.connect(
+                lambda: (bar.show(), bar.raise_(), bar.activateWindow()))
+        except Exception:
+            pass
+
+    # system tray (background-resident)
+    if _tray is not None:
+        try:
+            t = _tray.build_tray(bar)
+            if t is not None:
+                bar._tray = t
+                t.show()
+        except Exception:
+            pass
+
+    # first-run onboarding (after the window is up)
+    if _onboarding is not None:
+        try:
+            QtCore.QTimer.singleShot(
+                450, lambda: _onboarding.maybe_show_intro(bar, bar.cfg))
+        except Exception:
+            pass
+
+    # non-blocking update check (only if a manifest URL is configured)
+    if _updatecheck is not None and bar._cfg_get("check_updates", True):
+        try:
+            url = bar._cfg_get("update_url", None)
+            if url:
+                w = _updatecheck.UpdateWorker(APP_VERSION, url)
+                bar._updworker = w
+                w.result.connect(
+                    lambda latest, u: bar.status.setText(
+                        "A new version (%s) is available." % latest))
+                w.start()
+        except Exception:
+            pass
+
     return app.exec_()
 
 
