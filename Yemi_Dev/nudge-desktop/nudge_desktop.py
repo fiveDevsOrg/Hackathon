@@ -464,18 +464,56 @@ def _fg_hwnd():
         return 0
 
 
+# one cached mss instance PER THREAD -- mss isn't thread-safe and constructing
+# one per poll is wasteful (the settle/watch timers sample at 2-3 Hz). The main
+# (GUI) thread reuses its instance across polls so sampling stops hitching.
+_mss_tls = threading.local()
+
+
+def _get_sct():
+    sct = getattr(_mss_tls, "sct", None)
+    if sct is None:
+        import mss
+        sct = mss.mss()
+        _mss_tls.sct = sct
+    return sct
+
+
+def _drop_sct():
+    try:
+        s = getattr(_mss_tls, "sct", None)
+        if s is not None:
+            s.close()
+    except Exception:
+        pass
+    _mss_tls.sct = None
+
+
+def _center_crop(geom, frac=0.66):
+    """A centered sub-rect (l,t,w,h) of a QRect screen geometry, so the settle /
+    keyboard-step watch never grabs the FULL screen on the GUI thread."""
+    try:
+        cw, ch = int(geom.width() * frac), int(geom.height() * frac)
+        cl = geom.left() + (geom.width() - cw) // 2
+        ct = geom.top() + (geom.height() - ch) // 2
+        return (cl, ct, cw, ch)
+    except Exception:
+        return (geom.left(), geom.top(), geom.width(), geom.height())
+
+
 def region_hash(rect, pad=44, cells=24):
     """A tiny grayscale fingerprint (bytes, cells*cells) of the screen area
     around `rect` (absolute screen px), or None. Region is padded so a hover
-    highlight on the element alone doesn't dominate the diff.
+    highlight on the element alone doesn't dominate the diff. Reuses one mss
+    instance per thread; recreates it once if a grab fails.
     """
-    try:
-        import mss
-        from PIL import Image
-        x, y, w, h = rect
-        left, top = int(x - pad), int(y - pad)
-        width, height = int(w + pad * 2), int(h + pad * 2)
-        with mss.mss() as sct:
+    for _attempt in range(2):
+        try:
+            from PIL import Image
+            x, y, w, h = rect
+            left, top = int(x - pad), int(y - pad)
+            width, height = int(w + pad * 2), int(h + pad * 2)
+            sct = _get_sct()
             vb = sct.monitors[0]  # bounding box of all monitors
             # clamp to the virtual desktop so mss never grabs out of bounds
             l2 = max(vb["left"], left)
@@ -486,9 +524,10 @@ def region_hash(rect, pad=44, cells=24):
                 return None
             shot = sct.grab({"left": l2, "top": t2, "width": r2 - l2, "height": b2 - t2})
             img = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
-        return img.convert("L").resize((cells, cells)).tobytes()
-    except Exception:
-        return None
+            return img.convert("L").resize((cells, cells)).tobytes()
+        except Exception:
+            _drop_sct()  # stale/closed instance -> recreate on the next attempt
+    return None
 
 
 def hash_diff(a, b, tol=24):
@@ -755,8 +794,9 @@ def plan(task, marks, history, img_b64, win_title=None, app_name=None,
         if 0 <= idx < len(marks):
             out["index"] = idx
             return out
-        # a keyboard-only step (index -1 + key/type_text) or done is also valid
-        if idx < 0 and (out["key"] or out["type_text"] or out["done"]):
+        # a keyboard-only step or a done verdict is valid even if the index is
+        # out of range (incl. a positive hallucinated index) -- honor the payload
+        if out["key"] or out["type_text"] or out["done"]:
             out["index"] = -1
             return out
         # otherwise the model picked an out-of-range index -> heuristic
@@ -1292,6 +1332,7 @@ class ControlBar(QtWidgets.QWidget):
         self._gen = 0
         self._pointed_gen = -1     # gen we've already counted a step for
         self._inflight = []        # running PlanWorkers (kept alive until done)
+        self._reaping = []         # evicted workers kept referenced until finished
         self._repeat_sig = None    # signature of the last target (stall detect)
         self._repeat_count = 0
         self._est_total = 4        # soft denominator for "Step N of ~M"
@@ -1587,9 +1628,13 @@ class ControlBar(QtWidgets.QWidget):
         """Restore saved choices (QSettings for the original two keys; the JSON
         config for the newer options)."""
         try:
-            auto = self.settings.value("auto_advance", True, type=bool)
+            # JSON config is the source of truth; fall back to the legacy
+            # QSettings values so existing users' prefs migrate on first run
+            qs_auto = self.settings.value("auto_advance", True, type=bool)
+            auto = bool(self._cfg_get("auto_advance", qs_auto))
             self.auto_chk.setChecked(auto)  # no-op if already True; else fires toggle
-            sidx = self.settings.value("screen_index", 0, type=int)
+            qs_sidx = self.settings.value("screen_index", 0, type=int)
+            sidx = int(self._cfg_get("screen_index", qs_sidx))
             if 0 <= sidx < self.screen_combo.count():
                 self.screen_combo.setCurrentIndex(sidx)
         except Exception:
@@ -1631,7 +1676,7 @@ class ControlBar(QtWidgets.QWidget):
     def _drain_workers(self):
         """Ask in-flight PlanWorkers to stop and wait briefly so the process
         never hangs on exit with 'QThread destroyed while running'."""
-        for w in list(self._inflight):
+        for w in list(self._inflight) + list(self._reaping):
             try:
                 w.requestInterruption()
                 w.quit()
@@ -1639,6 +1684,7 @@ class ControlBar(QtWidgets.QWidget):
             except Exception:
                 pass
         self._inflight = []
+        self._reaping = []
 
     def closeEvent(self, e):
         try:
@@ -1690,7 +1736,7 @@ class ControlBar(QtWidgets.QWidget):
             self.move(g.center().x() - self.width() // 2, g.top() + 16)
         self.status.setText("Assisting on this monitor."
                             if idx == 0 else "Assisting on Screen %d." % idx)
-        self.settings.setValue("screen_index", idx)
+        self._cfg_set("screen_index", idx)
 
     # ---- dragging (the bar is interactive, so we move it ourselves) --------
     def mousePressEvent(self, e):
@@ -1715,6 +1761,8 @@ class ControlBar(QtWidgets.QWidget):
             return
         self.task = task
         self._record_recent(task)
+        self._gen += 1                 # supersede anything from a prior task
+        self._reset_engine_state()     # stop a stale settle/watcher timer cleanly
         self.history = []
         self.step = 0
         self._pointed_gen = -1
@@ -1722,28 +1770,38 @@ class ControlBar(QtWidgets.QWidget):
         self._repeat_count = 0
         self._est_total = 4
         self.guiding = True
-        self._pending = False
-        self._watch_base = None
-        self._watch_prev = None
         self.bridge.start()
         _dbg("on_guide: started task=%r" % task)
         self._set_state("thinking", "Looking at your screen...")
         self._kick()
 
-    def on_stop(self):
-        self.guiding = False
-        self._gen += 1            # invalidate any in-flight plan/confirm
+    def _reset_engine_state(self):
+        """Single source of truth for tearing down the active-guide timers +
+        flags. Stops every engine timer and clears the watcher/settle/pending
+        state so no method can 'forget' one and leave the loop wedged."""
         self._settle.stop()
         self._watcher.stop()
-        self.bridge.stop()
-        self.overlay.clear()
-        self.cur_target = None
+        self._pulse.stop()
         self._pending = False
-        self.explain_btn.setEnabled(False)
+        self._watch_base = None
+        self._watch_prev = None
+        self._settle_prev = None
+        self._settle_stable = 0
+        self._settle_elapsed = 0
+        self._settle_hinted = False
         try:
             self.progress.hide()
         except Exception:
             pass
+
+    def on_stop(self):
+        self.guiding = False
+        self._gen += 1            # invalidate any in-flight plan/confirm
+        self._reset_engine_state()
+        self.bridge.stop()
+        self.overlay.clear()
+        self.cur_target = None
+        self.explain_btn.setEnabled(False)
         self._set_state("idle", "Stopped. Type a new task and press Guide.")
 
     @guard
@@ -1788,8 +1846,9 @@ class ControlBar(QtWidgets.QWidget):
         self._settle_elapsed = 0
         self._settle_hinted = False
         _scr, _ = self._resolve_target_screen()
-        g = _scr.geometry()
-        self._settle_rect = (g.left(), g.top(), g.width(), g.height())
+        # watch a bounded center crop, not the whole screen, so the GUI thread
+        # doesn't grab a full 1080p frame every poll
+        self._settle_rect = _center_crop(_scr.geometry())
         self._settle.start()
 
     @guard
@@ -1856,7 +1915,7 @@ class ControlBar(QtWidgets.QWidget):
 
     def _on_auto_toggled(self, on):
         self.auto_advance = on
-        self.settings.setValue("auto_advance", on)
+        self._cfg_set("auto_advance", bool(on))
         if not on:
             self._watcher.stop()
             self.status.setText("Auto-advance off - click to move to the next step.")
@@ -1961,6 +2020,7 @@ class ControlBar(QtWidgets.QWidget):
         _dbg("kick gen=%d" % gen)
         # prune finished workers (backstop reap) and cap concurrency
         self._inflight = [x for x in self._inflight if x.isRunning()]
+        self._reaping = [x for x in self._reaping if x.isRunning()]
         while len(self._inflight) >= INFLIGHT_CAP:
             old = self._inflight.pop(0)
             try:
@@ -1968,6 +2028,9 @@ class ControlBar(QtWidgets.QWidget):
                 old.quit()
             except Exception:
                 pass
+            # keep a reference until it actually finishes -- dropping the only
+            # ref to a running QThread aborts the process
+            self._reaping.append(old)
         self.guide_btn.setEnabled(False)
         _scr, mon = self._resolve_target_screen()
         g = _scr.geometry()
@@ -2016,10 +2079,16 @@ class ControlBar(QtWidgets.QWidget):
                 self._est_total = self.step + 1  # estimate only ever clamps up
         self.overlay.point_at(mark["rect"], instr, self.step, confidence)
         if self._repeat_count >= STALL_LIMIT:
-            # break the loop: leave the pointer up but stop auto-re-arming
+            # break the re-plan loop, but KEEP auto-advance armed so a genuine
+            # screen change can still move us on (don't go dead until Stop)
             self._set_state("waiting",
                             "Still on the same step - if you already did this, press "
                             "Stop and rephrase, or click the highlighted item.")
+            if rearm:
+                self._watch_base = None
+                self._watch_prev = None
+            if self.auto_advance and not self._watcher.isActive():
+                self._watcher.start()
             return
         self._set_state("pointing", self._step_status(src, instr))
         self.explain_btn.setEnabled(_explain is not None)
@@ -2041,7 +2110,9 @@ class ControlBar(QtWidgets.QWidget):
             self._pointed_gen = gen
         scr, _ = self._resolve_target_screen()
         g = scr.geometry()
-        self.cur_target = {"name": label, "rect": (g.left(), g.top(), g.width(), g.height())}
+        # watch a bounded center crop (a keyboard action's foreground change is
+        # caught by fg_changed anyway) -- don't grab the full screen each poll
+        self.cur_target = {"name": label, "rect": _center_crop(g)}
         self.overlay.show_key(label, g)
         self.explain_btn.setEnabled(False)
         self._speak_step(label)
@@ -2072,10 +2143,11 @@ class ControlBar(QtWidgets.QWidget):
     def _on_plan(self, result):
         # back on the main thread
         w = self.sender()
-        try:
-            self._inflight.remove(w)  # reap; QThread can be GC'd now
-        except ValueError:
-            pass
+        for lst in (self._inflight, self._reaping):
+            try:
+                lst.remove(w)  # reap; QThread can be GC'd now it has finished
+            except ValueError:
+                pass
         if result.get("gen") != self._gen:
             return  # superseded by a newer cycle -- ignore this result
         try:
