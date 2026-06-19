@@ -206,9 +206,24 @@ def scan_marks(screen_rect=None):
 import os as _os
 
 _DBG = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "debug.log")
+_DEBUG_ON = False  # flipped on by --debug; _dbg() is a no-op otherwise
+
+
+def set_debug(on):
+    """Enable/disable the debug trace. When enabled, truncates debug.log."""
+    global _DEBUG_ON
+    _DEBUG_ON = bool(on)
+    if _DEBUG_ON:
+        try:
+            with open(_DBG, "w", encoding="utf-8") as f:
+                f.write("--- nudge debug log ---\n")
+        except Exception:
+            pass
 
 
 def _dbg(msg):
+    if not _DEBUG_ON:
+        return
     try:
         with open(_DBG, "a", encoding="utf-8") as f:
             f.write(str(msg) + "\n")
@@ -650,6 +665,45 @@ class ClickBridge(QtCore.QObject):
 
 
 # ===========================================================================
+# HotkeyBridge -- global keyboard hotkeys (own thread) -> main thread signals.
+# Ctrl+Alt+N toggles the bar's visibility; Ctrl+Alt+X stops guiding. Like
+# ClickBridge, the listener callbacks NEVER touch Qt -- they only emit.
+# ===========================================================================
+class HotkeyBridge(QtCore.QObject):
+    toggle = QtCore.pyqtSignal()
+    stop = QtCore.pyqtSignal()
+
+    def __init__(self):
+        super().__init__()
+        self._listener = None
+
+    def start(self):
+        if self._listener is not None:
+            return
+        try:
+            from pynput import keyboard
+
+            self._listener = keyboard.GlobalHotKeys({
+                "<ctrl>+<alt>+n": lambda: self.toggle.emit(),
+                "<ctrl>+<alt>+x": lambda: self.stop.emit(),
+            })
+            self._listener.start()
+            _dbg("HotkeyBridge: started (Ctrl+Alt+N show/hide, Ctrl+Alt+X stop)")
+        except Exception:
+            traceback.print_exc()
+            _dbg("HotkeyBridge: FAILED to start")
+            self._listener = None
+
+    def stop_listener(self):
+        if self._listener is not None:
+            try:
+                self._listener.stop()
+            except Exception:
+                pass
+            self._listener = None
+
+
+# ===========================================================================
 # ControlBar -- the interactive, draggable top-center command window.
 # Owns the engine loop state. All widget mutation happens here on the main
 # thread; blocking work is delegated to PlanWorker.
@@ -659,8 +713,12 @@ class ControlBar(QtWidgets.QWidget):
         super().__init__()
         self.overlay = overlay
         self.worker = None
+        self.settings = QtCore.QSettings("NudgeOS", "NudgeOS")
         self.bridge = ClickBridge()
         self.bridge.clicked.connect(self._on_global_click)
+        self.hotkeys = HotkeyBridge()
+        self.hotkeys.toggle.connect(self._toggle_visible)
+        self.hotkeys.stop.connect(self.on_stop)
         self.guiding = False
         self.history = []          # names of marks already pointed at/clicked
         self.marks = []            # current cycle's marks
@@ -687,6 +745,8 @@ class ControlBar(QtWidgets.QWidget):
         self._watcher.timeout.connect(self._watch_tick)
 
         self._build_ui()
+        self._load_prefs()
+        self.hotkeys.start()
 
     # ---- UI ---------------------------------------------------------------
     def _build_ui(self):
@@ -711,6 +771,7 @@ class ControlBar(QtWidgets.QWidget):
         row.setSpacing(8)
         title = QtWidgets.QLabel("Nudge OS")
         title.setObjectName("title")
+        title.setToolTip("Ctrl+Alt+N: show/hide   ·   Ctrl+Alt+X: stop   ·   Esc: stop")
         self.task_edit = QtWidgets.QLineEdit()
         self.task_edit.setPlaceholderText("What do you want to do?")
         self.task_edit.returnPressed.connect(self.on_guide)
@@ -782,6 +843,42 @@ class ControlBar(QtWidgets.QWidget):
         scr = QtWidgets.QApplication.primaryScreen().geometry()
         self.move(scr.center().x() - self.width() // 2, scr.top() + 16)
 
+        # Esc stops guiding when the bar is focused (global stop is Ctrl+Alt+X)
+        esc = QtWidgets.QShortcut(QtGui.QKeySequence("Escape"), self)
+        esc.activated.connect(self.on_stop)
+
+    # ---- preferences / visibility -----------------------------------------
+    def _load_prefs(self):
+        """Restore the saved Assist-screen and Auto-advance choices."""
+        try:
+            auto = self.settings.value("auto_advance", True, type=bool)
+            self.auto_chk.setChecked(auto)  # no-op if already True; else fires toggle
+            sidx = self.settings.value("screen_index", 0, type=int)
+            if 0 <= sidx < self.screen_combo.count():
+                self.screen_combo.setCurrentIndex(sidx)
+        except Exception:
+            traceback.print_exc()
+
+    def _toggle_visible(self):
+        """Ctrl+Alt+N -- hide the bar if shown, else summon + focus it."""
+        if self.isVisible():
+            self.hide()
+        else:
+            self.show()
+            self.raise_()
+            self.activateWindow()
+
+    def closeEvent(self, e):
+        try:
+            self.bridge.stop()
+            self.hotkeys.stop_listener()
+            self._watcher.stop()
+            self._debounce.stop()
+            self.settings.sync()
+        except Exception:
+            pass
+        super().closeEvent(e)
+
     # ---- screen selection --------------------------------------------------
     def _populate_screens(self):
         self.screen_combo.blockSignals(True)
@@ -813,6 +910,7 @@ class ControlBar(QtWidgets.QWidget):
             self.move(g.center().x() - self.width() // 2, g.top() + 16)
         self.status.setText("Assisting on this monitor."
                             if idx == 0 else "Assisting on Screen %d." % idx)
+        self.settings.setValue("screen_index", idx)
 
     # ---- dragging (the bar is interactive, so we move it ourselves) --------
     def mousePressEvent(self, e):
@@ -924,6 +1022,7 @@ class ControlBar(QtWidgets.QWidget):
 
     def _on_auto_toggled(self, on):
         self.auto_advance = on
+        self.settings.setValue("auto_advance", on)
         if not on:
             self._watcher.stop()
             self.status.setText("Auto-advance off - click to move to the next step.")
@@ -985,7 +1084,13 @@ class ControlBar(QtWidgets.QWidget):
             self.guiding = False
             self._watcher.stop()
             self.bridge.stop()
-            self.status.setText("Done!")
+            # reset for the next task: surface the bar, clear + focus the box
+            if not self.isVisible():
+                self.show()
+            self.raise_()
+            self.task_edit.clear()
+            self.task_edit.setFocus()
+            self.status.setText("Done! Type your next task and press Guide.")
             return
 
         idx = pl.get("index", -1)
@@ -1126,6 +1231,8 @@ def main():
         pass
 
     args = sys.argv[1:]
+    if "--debug" in args:
+        set_debug(True)
     if "--selftest-local" in args:
         sys.exit(run_selftest_local())
     if "--selftest" in args:
