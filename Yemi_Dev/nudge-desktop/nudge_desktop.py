@@ -626,6 +626,37 @@ def has_api_key():
     return bool((os.environ.get("ANTHROPIC_API_KEY") or "").strip())
 
 
+def _verify_done(task, img_b64, win_title=None):
+    """Second opinion before declaring a task complete. Returns (complete, reason).
+    Defaults to (True, '') on any error so verification can never get us stuck."""
+    if not has_api_key() or _prompts is None:
+        return True, ""
+    try:
+        import anthropic
+        client = anthropic.Anthropic(timeout=ANTHROPIC_TIMEOUT, max_retries=0)
+        content = []
+        if img_b64:
+            content.append({"type": "image", "source": {"type": "base64",
+                            "media_type": "image/png", "data": img_b64}})
+        q = "TASK: %s\n" % task
+        if win_title:
+            q += 'FOREGROUND WINDOW: "%s"\n' % win_title
+        q += "Is the task visibly COMPLETE on this screen? Return the STRICT JSON."
+        content.append({"type": "text", "text": q})
+        msg = client.messages.create(model=_model(), max_tokens=120,
+                                     system=_prompts.SYSTEM_VERIFY,
+                                     messages=[{"role": "user", "content": content}])
+        raw = ""
+        for b in getattr(msg, "content", []) or []:
+            if getattr(b, "type", None) == "text":
+                raw += b.text
+        data = _first_json(raw) or {}
+        return bool(data.get("complete", True)), str(data.get("reason", ""))[:160]
+    except Exception as ex:
+        _logx("verify_done", ex)
+        return True, ""
+
+
 def _model():
     try:
         return _CFG.get("model", MODEL) if _CFG else MODEL
@@ -956,13 +987,15 @@ class PlanWorker(QtCore.QThread):
     prelim = QtCore.pyqtSignal(dict)
     finished = QtCore.pyqtSignal(dict)
 
-    def __init__(self, task, history, mon_index=1, screen_rect=None, gen=0):
+    def __init__(self, task, history, mon_index=1, screen_rect=None, gen=0,
+                 stuck_note=None):
         super().__init__()
         self.task = task
         self.history = list(history)
         self.mon_index = mon_index
         self.screen_rect = screen_rect
         self.gen = gen
+        self.stuck_note = stuck_note
 
     def run(self):
         result = {"ok": False, "marks": [], "plan": None, "fg": 0, "tb": 0,
@@ -996,7 +1029,17 @@ class PlanWorker(QtCore.QThread):
                 _img, b64, _scale = grab_screen(self.mon_index)
             wt = getattr(_scan_ctx, "win_title", None)
             an = getattr(_scan_ctx, "app_name", None)
-            pl = plan(self.task, marks, self.history, b64, win_title=wt, app_name=an)
+            pl = plan(self.task, marks, self.history, b64, win_title=wt, app_name=an,
+                      stuck_note=self.stuck_note)
+            # verify before declaring done -- one cheap second opinion against a
+            # fresh screenshot catches premature "Done!"
+            if pl.get("done"):
+                vb64 = b64 if b64 is not None else grab_screen(self.mon_index)[1]
+                ok_done, reason = _verify_done(self.task, vb64, wt)
+                if not ok_done:
+                    pl["done"] = False
+                    if reason:
+                        pl["instruction"] = reason
             result.update({"ok": True, "marks": marks, "plan": pl, "fg": fg, "tb": tb})
         except Exception as ex:  # pragma: no cover - safety net
             traceback.print_exc()
@@ -1150,6 +1193,7 @@ class ControlBar(QtWidgets.QWidget):
         self._inflight = []        # running PlanWorkers (kept alive until done)
         self._repeat_sig = None    # signature of the last target (stall detect)
         self._repeat_count = 0
+        self._est_total = 4        # soft denominator for "Step N of ~M"
 
         # post-action settle: after a click/auto-advance, wait for the screen to
         # STOP changing (a program may take time to load) before re-planning, so
@@ -1401,6 +1445,10 @@ class ControlBar(QtWidgets.QWidget):
             css = css.replace("@%s@" % k, v)
         return css
 
+    def _step_status(self, src, instr):
+        return "Step %d of ~%d · %s · %s" % (
+            self.step, max(self.step, self._est_total), src, instr)
+
     def _set_state(self, state, text=None):
         """Update the status dot colour (+ pulse for working states) and text."""
         self._state = state
@@ -1560,6 +1608,7 @@ class ControlBar(QtWidgets.QWidget):
         self._pointed_gen = -1
         self._repeat_sig = None
         self._repeat_count = 0
+        self._est_total = 4
         self.guiding = True
         self._pending = False
         self._watch_base = None
@@ -1807,7 +1856,14 @@ class ControlBar(QtWidgets.QWidget):
         _scr, mon = self._resolve_target_screen()
         g = _scr.geometry()
         rect = (g.left(), g.top(), g.width(), g.height())
-        w = PlanWorker(self.task, self.history, mon, rect, gen)
+        # stuck recovery: if we keep landing on the same target, ask for a
+        # DIFFERENT next step on the upcoming cycle
+        stuck = None
+        if self._repeat_count >= 2 and self._repeat_sig:
+            nm = self._repeat_sig.split("|")[0]
+            stuck = ("The previous suggestion (%s) did not make progress. "
+                     "Propose a DIFFERENT element or a keyboard shortcut." % nm)
+        w = PlanWorker(self.task, self.history, mon, rect, gen, stuck)
         w.prelim.connect(self._on_prelim)
         w.finished.connect(self._on_plan)
         self._inflight.append(w)   # keep a ref so the QThread isn't GC'd mid-run
@@ -1836,6 +1892,8 @@ class ControlBar(QtWidgets.QWidget):
         if self._pointed_gen != gen:
             self.step += 1
             self._pointed_gen = gen
+            if self.step >= self._est_total:
+                self._est_total = self.step + 1  # estimate only ever clamps up
         self.overlay.point_at(mark["rect"], instr, self.step)
         if self._repeat_count >= STALL_LIMIT:
             # break the loop: leave the pointer up but stop auto-re-arming
@@ -1843,7 +1901,7 @@ class ControlBar(QtWidgets.QWidget):
                             "Still on the same step - if you already did this, press "
                             "Stop and rephrase, or click the highlighted item.")
             return
-        self._set_state("pointing", "Step %d · %s · %s" % (self.step, src, instr))
+        self._set_state("pointing", self._step_status(src, instr))
         self.explain_btn.setEnabled(_explain is not None)
         self._speak_step(instr)
         if rearm:
@@ -1969,7 +2027,7 @@ class ControlBar(QtWidgets.QWidget):
                 and self.cur_target.get("name") == target["name"]
                 and self.cur_target.get("rect") == target["rect"])
         if same:
-            self._set_state("pointing", "Step %d · %s · %s" % (self.step, src, instr))
+            self._set_state("pointing", self._step_status(src, instr))
         else:
             self._show_target(target, instr, src, result.get("gen"), rearm=True)
 
