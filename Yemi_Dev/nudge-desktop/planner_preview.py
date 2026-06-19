@@ -210,7 +210,7 @@ class OutlineWorker(QtCore.QThread):
             # dependency never breaks module import or the GUI thread.
             import anthropic
 
-            client = anthropic.Anthropic()
+            client = anthropic.Anthropic(timeout=8.0, max_retries=0)
 
             response = client.messages.create(
                 model=_MODEL_ID,

@@ -151,7 +151,7 @@ class ExplainWorker(QtCore.QThread):
             return ""
 
         try:
-            client = anthropic.Anthropic(api_key=api_key)
+            client = anthropic.Anthropic(api_key=api_key, timeout=8.0, max_retries=0)
         except Exception:
             return ""
 

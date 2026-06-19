@@ -543,6 +543,10 @@ def hash_diff(a, b, tol=24):
     return d / float(len(a))
 
 
+def _html_escape(s):
+    return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 def rect_on_screen(rect):
     """True if the rect has positive size and its center lies on a real screen.
     Fail-open (True on error) so a check glitch never blocks pointing."""
@@ -1129,7 +1133,7 @@ class PlanWorker(QtCore.QThread):
     finished = QtCore.pyqtSignal(dict)
 
     def __init__(self, task, history, mon_index=1, screen_rect=None, gen=0,
-                 stuck_note=None):
+                 stuck_note=None, route_step=None):
         super().__init__()
         self.task = task
         self.history = list(history)
@@ -1137,6 +1141,7 @@ class PlanWorker(QtCore.QThread):
         self.screen_rect = screen_rect
         self.gen = gen
         self.stuck_note = stuck_note
+        self.route_step = route_step
 
     def run(self):
         result = {"ok": False, "marks": [], "plan": None, "fg": 0, "tb": 0,
@@ -1171,7 +1176,7 @@ class PlanWorker(QtCore.QThread):
             wt = getattr(_scan_ctx, "win_title", None)
             an = getattr(_scan_ctx, "app_name", None)
             pl = plan(self.task, marks, self.history, b64, win_title=wt, app_name=an,
-                      stuck_note=self.stuck_note)
+                      stuck_note=self.stuck_note, route_step=self.route_step)
             # verify before declaring done -- one cheap second opinion against a
             # fresh screenshot catches premature "Done!"
             if pl.get("done"):
@@ -1314,6 +1319,9 @@ class ControlBar(QtWidgets.QWidget):
         self.cfg = _CFG  # JSON config (settings.py) for the newer options
         self._recent = []
         self._explainer = None  # keep ExplainWorker referenced
+        self._outliner = None   # keep OutlineWorker referenced
+        self._route = []        # high-level route steps for the current task
+        self._route_i = 0
         self.bridge = ClickBridge()
         self.bridge.clicked.connect(self._on_global_click)
         self.hotkeys = HotkeyBridge()
@@ -1528,6 +1536,14 @@ class ControlBar(QtWidgets.QWidget):
         self.progress.hide()
         lay.addWidget(self.progress)
 
+        # route checklist (filled by the OutlineWorker; hidden until it lands)
+        self.route_strip = QtWidgets.QLabel()
+        self.route_strip.setObjectName("route")
+        self.route_strip.setWordWrap(True)
+        self.route_strip.setTextFormat(QtCore.Qt.RichText)
+        self.route_strip.hide()
+        lay.addWidget(self.route_strip)
+
         self.setStyleSheet(self._qss())
         self._set_state("idle")
 
@@ -1593,6 +1609,8 @@ class ControlBar(QtWidgets.QWidget):
         #intensity::handle:horizontal:hover { background: @ember_hi@; }
         #shimmer { background: transparent; border: none; max-height: 3px; }
         #shimmer::chunk { background: @ember@; border-radius: 2px; }
+        #route { background: #15130F; border: 1px solid @edge@; border-radius: 9px;
+            padding: 7px 10px; font: 11px 'Segoe UI'; }
         """
         for k, v in THEME.items():
             css = css.replace("@%s@" % k, v)
@@ -1685,6 +1703,13 @@ class ControlBar(QtWidgets.QWidget):
                 pass
         self._inflight = []
         self._reaping = []
+        for w in (self._outliner, self._explainer):  # side workers (no timeout-free hangs)
+            if w is not None:
+                try:
+                    w.quit()
+                    w.wait(1500)
+                except Exception:
+                    pass
 
     def closeEvent(self, e):
         try:
@@ -1769,10 +1794,12 @@ class ControlBar(QtWidgets.QWidget):
         self._repeat_sig = None
         self._repeat_count = 0
         self._est_total = 4
+        self._clear_route()
         self.guiding = True
         self.bridge.start()
         _dbg("on_guide: started task=%r" % task)
         self._set_state("thinking", "Looking at your screen...")
+        self._kick_outline()
         self._kick()
 
     def _reset_engine_state(self):
@@ -1802,6 +1829,7 @@ class ControlBar(QtWidgets.QWidget):
         self.overlay.clear()
         self.cur_target = None
         self.explain_btn.setEnabled(False)
+        self._clear_route()
         self._set_state("idle", "Stopped. Type a new task and press Guide.")
 
     @guard
@@ -1829,6 +1857,7 @@ class ControlBar(QtWidgets.QWidget):
             if not self.history or self.history[-1] != nm:
                 self.history.append(nm)
             self.history = self.history[-HISTORY_CAP:]  # bound prompt + memory
+        self._advance_route()  # a step completed -> tick the route checklist
         self.cur_target = None
         self.explain_btn.setEnabled(False)
         self.overlay.clear()  # drop the stale pointer immediately for feedback
@@ -2008,6 +2037,64 @@ class ControlBar(QtWidgets.QWidget):
         except Exception:
             pass
 
+    # ---- route preview ----------------------------------------------------
+    def _kick_outline(self):
+        """Off-thread: ask for a high-level route for the current task. Never
+        blocks pointing; result fills the route checklist when it lands."""
+        if _planner_preview is None or not self._cfg_get("show_preview", True):
+            return
+        if not has_api_key():
+            return
+        try:
+            wt = getattr(_scan_ctx, "win_title", None)
+            self._outliner = _planner_preview.OutlineWorker(self.task, wt, self._gen)
+            self._outliner.outline_ready.connect(self._on_outline)
+            self._outliner.start()
+        except Exception:
+            pass
+
+    @guard
+    def _on_outline(self, steps, gen):
+        if gen != self._gen or not self.guiding:
+            return
+        steps = [s for s in (steps or []) if s][:6]
+        if not steps:
+            return
+        self._route = steps
+        self._route_i = 0
+        self._est_total = max(self._est_total, len(steps))
+        self._render_route()
+
+    def _render_route(self):
+        if not self._route:
+            self.route_strip.hide()
+            return
+        rows = []
+        for i, s in enumerate(self._route):
+            t = _html_escape(s)
+            if i < self._route_i:
+                rows.append('<span style="color:#5BD08A">&#10003;&nbsp; %s</span>' % t)
+            elif i == self._route_i:
+                rows.append('<span style="color:#FF6B35"><b>&#9656;&nbsp; %s</b></span>' % t)
+            else:
+                rows.append('<span style="color:#7D766C">&#183;&nbsp; %s</span>' % t)
+        self.route_strip.setText("<br>".join(rows))
+        self.route_strip.show()
+        self.adjustSize()
+
+    def _advance_route(self):
+        if self._route and self._route_i < len(self._route):
+            self._route_i += 1
+            self._render_route()
+
+    def _clear_route(self):
+        self._route = []
+        self._route_i = 0
+        try:
+            self.route_strip.hide()
+        except Exception:
+            pass
+
     def _advance(self):
         _dbg("advance: guiding=%s" % self.guiding)
         if self.guiding:
@@ -2042,7 +2129,10 @@ class ControlBar(QtWidgets.QWidget):
             nm = self._repeat_sig.split("|")[0]
             stuck = ("The previous suggestion (%s) did not make progress. "
                      "Propose a DIFFERENT element or a keyboard shortcut." % nm)
-        w = PlanWorker(self.task, self.history, mon, rect, gen, stuck)
+        route_step = None
+        if self._route and 0 <= self._route_i < len(self._route):
+            route_step = self._route[self._route_i]
+        w = PlanWorker(self.task, self.history, mon, rect, gen, stuck, route_step)
         w.prelim.connect(self._on_prelim)
         w.finished.connect(self._on_plan)
         self._inflight.append(w)   # keep a ref so the QThread isn't GC'd mid-run
@@ -2196,6 +2286,7 @@ class ControlBar(QtWidgets.QWidget):
             self.raise_()
             self.task_edit.clear()
             self.task_edit.setFocus()
+            self._clear_route()
             self._set_state("done", "Done! Type your next task and press Guide.")
             return
 
