@@ -377,24 +377,29 @@ def _heuristic(task, marks):
     """Pick a mark by token overlap with the task. Returns a result dict.
 
     Fallback ladder: best token match -> a 'Start' button -> first taskbar-ish
-    item -> mark 0. source is always 'local'.
+    item -> mark 0. source is always 'local'. Also returns `score` (the best
+    token-overlap count) and `unique` (only one mark hit that top score) so the
+    fast path can decide whether to trust it without a vision call.
     """
     if not marks:
         return {"index": -1, "instruction": "No UI elements detected -- try the taskbar.",
-                "done": False, "source": "local"}
+                "done": False, "source": "local", "score": 0, "unique": False}
     task_toks = set(_tokens(task)) - _STOP_WORDS
-    best_i, best_score = -1, 0
+    best_i, best_score, ties = -1, 0, 0
     for m in marks:
         name_toks = set(_tokens(m["name"]))
         score = len(task_toks & name_toks)
         # light bonus for partial/substring hits (e.g. "mail" in "Outlook Mail")
         if score == 0:
             for t in task_toks:
-                if any(t in nt or nt in t for nt in name_toks if len(t) >= 3):
+                if len(t) >= 3 and any(t in nt or nt in t for nt in name_toks):
                     score = 1
                     break
         if score > best_score:
-            best_score, best_i = score, m["i"]
+            best_score, best_i, ties = score, m["i"], 1
+        elif score == best_score and score > 0:
+            ties += 1
+    unique = best_score >= 1 and ties == 1
     if best_i < 0:
         # prefer a Start button, else first mark
         for m in marks:
@@ -408,7 +413,16 @@ def _heuristic(task, marks):
         "instruction": "Best local guess: click \"%s\"." % marks[best_i]["name"],
         "done": False,
         "source": "local",
+        "score": best_score,
+        "unique": unique,
     }
+
+
+def _confident_local(h):
+    """True when the heuristic found a single, strongly-matching element -- safe
+    to point at instantly and confirm with a fast text-only vision call."""
+    return bool(h and h.get("source") == "local" and h.get("unique")
+                and h.get("score", 0) >= 1 and h.get("index", -1) >= 0)
 
 
 _SYSTEM = (
@@ -588,17 +602,24 @@ class Overlay(QtWidgets.QWidget):
 # Emits `finished` with a plain dict; never touches a widget.
 # ===========================================================================
 class PlanWorker(QtCore.QThread):
+    # `prelim` fires as soon as the UIA scan + heuristic are ready (before the
+    # slow vision call) so the main thread can point INSTANTLY on confident
+    # matches. `finished` carries the authoritative plan. Both tag a `gen` so
+    # the main thread can ignore results from a superseded cycle.
+    prelim = QtCore.pyqtSignal(dict)
     finished = QtCore.pyqtSignal(dict)
 
-    def __init__(self, task, history, mon_index=1, screen_rect=None):
+    def __init__(self, task, history, mon_index=1, screen_rect=None, gen=0):
         super().__init__()
         self.task = task
         self.history = list(history)
         self.mon_index = mon_index
         self.screen_rect = screen_rect
+        self.gen = gen
 
     def run(self):
-        result = {"ok": False, "marks": [], "plan": None, "fg": 0, "tb": 0, "error": ""}
+        result = {"ok": False, "marks": [], "plan": None, "fg": 0, "tb": 0,
+                  "error": "", "gen": self.gen}
         com = False
         try:
             import comtypes
@@ -608,7 +629,20 @@ class PlanWorker(QtCore.QThread):
             pass
         try:
             marks, fg, tb = scan_marks(self.screen_rect)
-            _img, b64, _scale = grab_screen(self.mon_index)
+            h = _heuristic(self.task, marks)
+            # confident == a unique strong name match we HAVEN'T already clicked
+            already = (h.get("index", -1) >= 0 and marks
+                       and marks[h["index"]]["name"] in self.history)
+            confident = _confident_local(h) and not already
+            # instant optimistic pointer for confident matches (main thread
+            # decides whether to actually show it)
+            self.prelim.emit({"marks": marks, "plan": h, "fg": fg, "tb": tb,
+                              "confident": confident, "gen": self.gen})
+            # unambiguous element -> skip the screenshot; text-only is faster.
+            # ambiguous -> send the screenshot so the model can ground visually.
+            b64 = None
+            if not confident:
+                _img, b64, _scale = grab_screen(self.mon_index)
             pl = plan(self.task, marks, self.history, b64)
             result.update({"ok": True, "marks": marks, "plan": pl, "fg": fg, "tb": tb})
         except Exception as ex:  # pragma: no cover - safety net
@@ -726,6 +760,12 @@ class ControlBar(QtWidgets.QWidget):
         self.step = 0
         self._dragging = False
         self._drag_off = QtCore.QPoint()
+        # latency model: each cycle has a generation; only the current gen's
+        # results count, so we can point optimistically + supersede in-flight
+        # workers without races.
+        self._gen = 0
+        self._pointed_gen = -1     # gen we've already counted a step for
+        self._inflight = []        # running PlanWorkers (kept alive until done)
 
         # debounce timer: re-plan only after the UI settles post-click
         self._debounce = QtCore.QTimer(self)
@@ -936,6 +976,7 @@ class ControlBar(QtWidgets.QWidget):
         self.task = task
         self.history = []
         self.step = 0
+        self._pointed_gen = -1
         self.guiding = True
         self._pending = False
         self._watch_base = None
@@ -947,6 +988,7 @@ class ControlBar(QtWidgets.QWidget):
 
     def on_stop(self):
         self.guiding = False
+        self._gen += 1            # invalidate any in-flight plan/confirm
         self._debounce.stop()
         self._watcher.stop()
         self.bridge.stop()
@@ -970,9 +1012,8 @@ class ControlBar(QtWidgets.QWidget):
         """
         if not self.guiding or self._pending:
             return
-        if self.worker is not None and self.worker.isRunning():
-            return
         self._pending = True
+        self._gen += 1            # supersede any in-flight plan/confirm
         self._watcher.stop()
         # remember what we just told them to click
         if self.cur_target and self.cur_target.get("name"):
@@ -990,8 +1031,7 @@ class ControlBar(QtWidgets.QWidget):
     def _watch_tick(self):
         """Sample the region around the current target; auto-advance once it has
         changed from the baseline AND stopped moving (the action completed)."""
-        if (not self.guiding or self._pending or not self.cur_target
-                or (self.worker is not None and self.worker.isRunning())):
+        if not self.guiding or self._pending or not self.cur_target:
             return
         rect = self.cur_target.get("rect")
         if not rect:
@@ -1040,22 +1080,63 @@ class ControlBar(QtWidgets.QWidget):
 
     def _kick(self):
         """Start a background capture+scan+plan cycle (non-blocking)."""
-        _dbg("kick")
-        if self.worker is not None and self.worker.isRunning():
-            return
+        self._gen += 1
+        gen = self._gen
+        _dbg("kick gen=%d" % gen)
         self.guide_btn.setEnabled(False)
         _scr, mon = self._resolve_target_screen()
         g = _scr.geometry()
         rect = (g.left(), g.top(), g.width(), g.height())
-        self.worker = PlanWorker(self.task, self.history, mon, rect)
-        self.worker.finished.connect(self._on_plan)
-        self.worker.start()
+        w = PlanWorker(self.task, self.history, mon, rect, gen)
+        w.prelim.connect(self._on_prelim)
+        w.finished.connect(self._on_plan)
+        self._inflight.append(w)   # keep a ref so the QThread isn't GC'd mid-run
+        self.worker = w
+        w.start()
+
+    def _show_target(self, mark, instr, src, gen, rearm=True):
+        """Point at `mark`, count the step once per gen, and (re)arm the watcher.
+        rearm=False leaves an already-running watcher + its baseline untouched
+        (used when the vision plan merely confirms the optimistic target)."""
+        self.cur_target = {"name": mark["name"], "rect": mark["rect"]}
+        if self._pointed_gen != gen:
+            self.step += 1
+            self._pointed_gen = gen
+        self.overlay.point_at(mark["rect"], instr)
+        self.status.setText("Step %d · %s · %s" % (self.step, src, instr))
+        if rearm:
+            self._watch_base = None
+            self._watch_prev = None
+        if self.auto_advance and not self._watcher.isActive():
+            self._watcher.start()
+
+    def _on_prelim(self, result):
+        """Instant optimistic pointer the moment the scan + heuristic land, for
+        confident matches -- before the vision call returns."""
+        if result.get("gen") != self._gen or not self.guiding or self._pending:
+            return
+        if not result.get("confident"):
+            return  # ambiguous -> wait for the authoritative vision plan
+        marks = result.get("marks") or []
+        idx = (result.get("plan") or {}).get("index", -1)
+        if idx is None or idx < 0 or idx >= len(marks):
+            return
+        self.marks = marks
+        t = marks[idx]
+        self._show_target(t, 'Click "%s".' % t["name"], "fast", result["gen"])
 
     def _on_plan(self, result):
         # back on the main thread
+        w = self.sender()
+        try:
+            self._inflight.remove(w)  # reap; QThread can be GC'd now
+        except ValueError:
+            pass
+        if result.get("gen") != self._gen:
+            return  # superseded by a newer cycle -- ignore this result
         _pl = result.get("plan") or {}
-        _dbg("on_plan: ok=%s marks=%d idx=%s done=%s" % (
-            result.get("ok"), len(result.get("marks", [])),
+        _dbg("on_plan: gen=%s ok=%s marks=%d idx=%s done=%s" % (
+            result.get("gen"), result.get("ok"), len(result.get("marks", [])),
             _pl.get("index"), _pl.get("done")))
         self.guide_btn.setEnabled(True)
         self._pending = False  # this cycle's plan is in; accept progress again
@@ -1107,18 +1188,18 @@ class ControlBar(QtWidgets.QWidget):
                 return
 
         target = self.marks[idx]
-        self.cur_target = {"name": target["name"], "rect": target["rect"]}
-        self.step += 1
         src = pl.get("source", "AI")
         instr = pl.get("instruction", "Click this.")
-        self.overlay.point_at(target["rect"], instr)
-        self.status.setText("Step %d · %s · %s" % (self.step, src, instr))
-        # arm the auto-advance watcher on the new target (baseline captured on
-        # the first tick, once the overlay has painted)
-        self._watch_base = None
-        self._watch_prev = None
-        if self.auto_advance:
-            self._watcher.start()
+        # did the optimistic prelim already point here? then this is a silent
+        # confirm -- leave the overlay + watcher alone (repainting the tooltip
+        # could trip the watcher); just refresh the status line.
+        same = (self._pointed_gen == result.get("gen") and self.cur_target
+                and self.cur_target.get("name") == target["name"]
+                and self.cur_target.get("rect") == target["rect"])
+        if same:
+            self.status.setText("Step %d · %s · %s" % (self.step, src, instr))
+        else:
+            self._show_target(target, instr, src, result.get("gen"), rearm=True)
 
 
 # ===========================================================================
