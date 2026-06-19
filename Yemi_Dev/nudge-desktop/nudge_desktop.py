@@ -166,10 +166,26 @@ def scan_marks():
 # ===========================================================================
 # Screen grab -- mss + PIL, downscaled, base64 PNG
 # ===========================================================================
-def grab_screen():
+def mss_index_for(qgeom):
+    """Map a Qt QScreen.geometry() to an mss monitor index (1-based). 1 on miss."""
+    try:
+        import mss
+        with mss.mss() as sct:
+            for i, m in enumerate(sct.monitors):
+                if i == 0:
+                    continue
+                if m["left"] == qgeom.left() and m["top"] == qgeom.top():
+                    return i
+    except Exception:
+        pass
+    return 1
+
+
+def grab_screen(mon_index=1):
     """Return (PIL.Image rgb, base64_png_str, scale).
 
-    Captures the primary monitor with mss, downscales to TARGET_W wide.
+    Captures the given monitor (1-based mss index) with mss, downscales to
+    TARGET_W wide.
     scale = downscaled_width / original_width (kept for completeness; the model
     is given real-pixel mark rects so it does not need to undo the scale).
     Never raises -- returns (None, None, 1.0) on failure.
@@ -182,7 +198,8 @@ def grab_screen():
         return None, None, 1.0
     try:
         with mss.mss() as sct:
-            mon = sct.monitors[1]  # primary monitor
+            mons = sct.monitors
+            mon = mons[mon_index] if 0 < mon_index < len(mons) else mons[1]
             shot = sct.grab(mon)
             img = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
         ow = img.width
@@ -374,7 +391,8 @@ class Overlay(QtWidgets.QWidget):
         )
         self.setAttribute(QtCore.Qt.WA_TranslucentBackground)
         self.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents)  # click-through
-        self.sg = QtWidgets.QApplication.primaryScreen().geometry()
+        # span the ENTIRE virtual desktop so the pointer can land on ANY monitor
+        self.sg = QtWidgets.QApplication.primaryScreen().virtualGeometry()
         self.setGeometry(self.sg)
 
     def point_at(self, rect, label):
@@ -422,10 +440,17 @@ class Overlay(QtWidgets.QWidget):
         pad, th = 14, 34
         tw = QtGui.QFontMetrics(fb).horizontalAdvance("Nudge") + 8 + \
             QtGui.QFontMetrics(f).horizontalAdvance(self.label) + pad * 2
+        # clamp the tooltip to the monitor the TARGET sits on (not the whole
+        # virtual desktop), so it never spills onto an adjacent screen.
+        gc = QtCore.QPoint(self.t[0] + self.t[2] // 2, self.t[1] + self.t[3] // 2)
+        _scr = QtWidgets.QApplication.screenAt(gc) or QtWidgets.QApplication.primaryScreen()
+        _sb = _scr.geometry()
+        mb_l, mb_t = _sb.left() - self.sg.left(), _sb.top() - self.sg.top()
+        mb_r, mb_b = mb_l + _sb.width(), mb_t + _sb.height()
         tx, ty = x - 5, y + h + 14
-        if ty + th > self.height() - 4:
+        if ty + th > mb_b - 4:
             ty = y - th - 14
-        tx = max(4, min(tx, self.width() - tw - 6))
+        tx = max(mb_l + 4, min(tx, mb_r - tw - 6))
         p.setBrush(INK)
         p.setPen(QtCore.Qt.NoPen)
         p.drawRoundedRect(tx, ty, tw, th, 9, 9)
@@ -445,10 +470,11 @@ class Overlay(QtWidgets.QWidget):
 class PlanWorker(QtCore.QThread):
     finished = QtCore.pyqtSignal(dict)
 
-    def __init__(self, task, history):
+    def __init__(self, task, history, mon_index=1):
         super().__init__()
         self.task = task
         self.history = list(history)
+        self.mon_index = mon_index
 
     def run(self):
         result = {"ok": False, "marks": [], "plan": None, "fg": 0, "tb": 0, "error": ""}
@@ -461,7 +487,7 @@ class PlanWorker(QtCore.QThread):
             pass
         try:
             marks, fg, tb = scan_marks()
-            _img, b64, _scale = grab_screen()
+            _img, b64, _scale = grab_screen(self.mon_index)
             pl = plan(self.task, marks, self.history, b64)
             result.update({"ok": True, "marks": marks, "plan": pl, "fg": fg, "tb": tb})
         except Exception as ex:  # pragma: no cover - safety net
@@ -580,6 +606,19 @@ class ControlBar(QtWidgets.QWidget):
         row.addWidget(self.stop_btn)
         lay.addLayout(row)
 
+        # screen selector -- Auto follows the monitor the bar sits on
+        srow = QtWidgets.QHBoxLayout()
+        srow.setSpacing(8)
+        slab = QtWidgets.QLabel("Assist screen:")
+        slab.setObjectName("status")
+        self.screen_combo = QtWidgets.QComboBox()
+        self.screen_combo.setObjectName("screens")
+        self._populate_screens()
+        self.screen_combo.currentIndexChanged.connect(self._on_screen_changed)
+        srow.addWidget(slab)
+        srow.addWidget(self.screen_combo, 1)
+        lay.addLayout(srow)
+
         self.status = QtWidgets.QLabel("Type a task and press Guide. I point, you click.")
         self.status.setObjectName("status")
         self.status.setWordWrap(True)
@@ -601,12 +640,48 @@ class ControlBar(QtWidgets.QWidget):
             #stop { background: #2a2622; }
             #stop:hover { background: #3a3530; }
             #status { color: #b9b2a8; font: 11px 'Segoe UI'; }
+            #screens { background: #0E0D0C; color: #F4F2EC; border: 1px solid #3a3530;
+                       border-radius: 7px; padding: 3px 8px; font: 11px 'Segoe UI'; }
+            #screens QAbstractItemView { background: #15130f; color: #F4F2EC;
+                       selection-background-color: #FF6B35; selection-color: #0E0D0C; }
             """
         )
 
-        self.resize(560, 92)
+        self.resize(560, 120)
         scr = QtWidgets.QApplication.primaryScreen().geometry()
         self.move(scr.center().x() - self.width() // 2, scr.top() + 16)
+
+    # ---- screen selection --------------------------------------------------
+    def _populate_screens(self):
+        self.screen_combo.blockSignals(True)
+        self.screen_combo.clear()
+        self.screen_combo.addItem("Auto (this monitor)")
+        prim = QtWidgets.QApplication.primaryScreen()
+        for i, s in enumerate(QtWidgets.QApplication.screens()):
+            g = s.geometry()
+            tag = " - primary" if s == prim else ""
+            self.screen_combo.addItem("Screen %d  (%dx%d)%s" % (i + 1, g.width(), g.height(), tag))
+        self.screen_combo.blockSignals(False)
+
+    def _resolve_target_screen(self):
+        """Return (QScreen, mss_monitor_index) for the chosen / auto screen."""
+        screens = QtWidgets.QApplication.screens()
+        idx = self.screen_combo.currentIndex()
+        if idx <= 0:  # Auto -> the monitor the control bar currently sits on
+            scr = QtWidgets.QApplication.screenAt(self.frameGeometry().center()) \
+                or QtWidgets.QApplication.primaryScreen()
+        else:
+            scr = screens[idx - 1] if (idx - 1) < len(screens) \
+                else QtWidgets.QApplication.primaryScreen()
+        return scr, mss_index_for(scr.geometry())
+
+    def _on_screen_changed(self, idx):
+        scr, _ = self._resolve_target_screen()
+        if idx > 0:  # explicit choice -> move the bar onto that monitor
+            g = scr.geometry()
+            self.move(g.center().x() - self.width() // 2, g.top() + 16)
+        self.status.setText("Assisting on this monitor."
+                            if idx == 0 else "Assisting on Screen %d." % idx)
 
     # ---- dragging (the bar is interactive, so we move it ourselves) --------
     def mousePressEvent(self, e):
@@ -668,7 +743,8 @@ class ControlBar(QtWidgets.QWidget):
         if self.worker is not None and self.worker.isRunning():
             return
         self.guide_btn.setEnabled(False)
-        self.worker = PlanWorker(self.task, self.history)
+        _scr, mon = self._resolve_target_screen()
+        self.worker = PlanWorker(self.task, self.history, mon)
         self.worker.finished.connect(self._on_plan)
         self.worker.start()
 
