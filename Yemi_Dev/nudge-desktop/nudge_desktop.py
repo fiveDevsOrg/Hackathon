@@ -71,7 +71,7 @@ except Exception:
     _prompts = None
 # UI / feature modules -- all guarded; any missing one just disables its feature
 for _m in ("icons", "presets", "tray", "tts", "autostart", "onboarding",
-           "updatecheck", "explain", "planner_preview"):
+           "updatecheck", "explain", "planner_preview", "control_server"):
     try:
         globals()["_" + _m] = __import__(_m)
     except Exception:
@@ -1324,6 +1324,10 @@ class ControlBar(QtWidgets.QWidget):
         self._outliner = None   # keep OutlineWorker referenced
         self._route = []        # high-level route steps for the current task
         self._route_i = 0
+        self._scripted = False  # True when an agent supplied the steps (API)
+        self._last_result = None  # outcome of the last task (for /status)
+        self._control_srv = None   # HTTP control server (if running)
+        self._control_bridge = None
         self.bridge = ClickBridge()
         self.bridge.clicked.connect(self._on_global_click)
         self.hotkeys = HotkeyBridge()
@@ -1748,6 +1752,11 @@ class ControlBar(QtWidgets.QWidget):
             self._settle.stop()
             self._pulse.stop()
             self._save_position()
+            if self._control_srv is not None:
+                try:
+                    self._control_srv.shutdown()
+                except Exception:
+                    pass
             self._drain_workers()
             if _tts is not None:
                 try:
@@ -1826,6 +1835,8 @@ class ControlBar(QtWidgets.QWidget):
         self._repeat_count = 0
         self._est_total = 4
         self._clear_route()
+        self._scripted = False
+        self._last_result = None
         self.guiding = True
         self.paused = False
         self.bridge.start()
@@ -1833,6 +1844,87 @@ class ControlBar(QtWidgets.QWidget):
         self._set_state("thinking", "Looking at your screen...")
         self._kick_outline()
         self._kick()
+
+    # ---- programmatic control (HTTP API / MCP drive these) ----------------
+    def guide_task(self, task):
+        """Start an autonomous guide for a task string (agent-driven /guide)."""
+        task = (task or "").strip()
+        if not task:
+            return
+        self.show()
+        self.raise_()
+        self.task_edit.setText(task)
+        self.on_guide()
+
+    def guide_steps(self, steps, task=""):
+        """Guide through an agent-supplied ordered list of steps. The steps
+        become the route; Nudge locates + points at each on the live screen and
+        advances as you complete them, reporting back via /status."""
+        steps = [str(s).strip() for s in (steps or []) if str(s).strip()][:20]
+        if not steps:
+            self._set_state("error", "No steps provided.")
+            return
+        self.task = task or steps[0]
+        self._record_recent(self.task)
+        self._gen += 1
+        self._reset_engine_state()
+        self.history = []
+        self.step = 0
+        self._pointed_gen = -1
+        self._repeat_sig = None
+        self._repeat_count = 0
+        self._est_total = len(steps)
+        self._clear_route()
+        self._route = steps
+        self._route_i = 0
+        self._scripted = True
+        self._last_result = None
+        self.guiding = True
+        self.paused = False
+        self.show()
+        self.raise_()
+        self.bridge.start()
+        self._render_route()
+        _dbg("guide_steps: %d steps" % len(steps))
+        self._set_state("thinking", "Agent steps received - locating step 1...")
+        self._kick()
+
+    def status_snapshot(self):
+        """A plain-dict snapshot of engine state for /status (read-only; safe to
+        call from the control-server thread -- touches no Qt widgets)."""
+        cur = self.cur_target.get("name") if self.cur_target else None
+        return {
+            "guiding": bool(self.guiding),
+            "paused": bool(self.paused),
+            "scripted": bool(self._scripted),
+            "task": getattr(self, "task", ""),
+            "step": int(self.step),
+            "total": int(self._est_total),
+            "route": list(self._route),
+            "route_index": int(self._route_i),
+            "current": cur,
+            "state": self._state,
+            "result": self._last_result,
+            "version": APP_VERSION,
+        }
+
+    def _finish_scripted(self):
+        """All agent-supplied steps completed -> finish + record the result."""
+        self._last_result = {"ok": True, "done": True,
+                             "steps_completed": len(self._route),
+                             "reason": "all steps completed"}
+        try:
+            scr, _ = self._resolve_target_screen()
+            self.overlay.flash_done(scr.geometry())
+        except Exception:
+            self.overlay.clear()
+        self.guiding = False
+        self._scripted = False
+        self._reset_engine_state()
+        self.bridge.stop()
+        self.cur_target = None
+        self.explain_btn.setEnabled(False)
+        self._set_state("done", "Done - all agent steps completed.")
 
     def _reset_engine_state(self):
         """Single source of truth for tearing down the active-guide timers +
@@ -1910,7 +2002,10 @@ class ControlBar(QtWidgets.QWidget):
             if not self.history or self.history[-1] != nm:
                 self.history.append(nm)
             self.history = self.history[-HISTORY_CAP:]  # bound prompt + memory
-        self._advance_route()  # a step completed -> tick the route checklist
+        exhausted = self._advance_route()  # tick the route checklist
+        if self._scripted and exhausted:
+            self._finish_scripted()        # all agent steps done -> report
+            return
         self.cur_target = None
         self.explain_btn.setEnabled(False)
         self.overlay.clear()  # drop the stale pointer immediately for feedback
@@ -2139,6 +2234,7 @@ class ControlBar(QtWidgets.QWidget):
         if self._route and self._route_i < len(self._route):
             self._route_i += 1
             self._render_route()
+        return bool(self._route and self._route_i >= len(self._route))
 
     def _clear_route(self):
         self._route = []
@@ -2341,6 +2437,9 @@ class ControlBar(QtWidgets.QWidget):
             self.task_edit.clear()
             self.task_edit.setFocus()
             self._clear_route()
+            self._scripted = False
+            self._last_result = {"ok": True, "done": True,
+                                 "steps_completed": self.step, "reason": "task complete"}
             self._set_state("done", "Done! Type your next task and press Guide.")
             return
 
@@ -2570,6 +2669,25 @@ def run_app():
             if t is not None:
                 bar._tray = t
                 t.show()
+        except Exception:
+            pass
+
+    # control server -- the HTTP API agents drive Nudge through (localhost only)
+    if _control_server is not None and bar._cfg_get("control_server", True):
+        try:
+            bridge = _control_server.ControlBridge()
+            bridge.guide_task.connect(bar.guide_task)
+            bridge.guide_steps.connect(bar.guide_steps)
+            bridge.stop.connect(bar.on_stop)
+            bridge.pause.connect(bar._toggle_pause)
+            port = int(bar._cfg_get("control_port", 8765))
+            token = os.environ.get("NUDGE_TOKEN") or bar._cfg_get("control_token", None)
+            srv = _control_server.start_server(
+                bridge, bar.status_snapshot, port=port, token=token)
+            bar._control_bridge = bridge
+            bar._control_srv = srv
+            if srv is not None:
+                _dbg("control server listening on 127.0.0.1:%d" % port)
         except Exception:
             pass
 
