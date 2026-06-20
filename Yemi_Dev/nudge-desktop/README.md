@@ -117,6 +117,56 @@ python nudge_desktop.py --selftest --task "open my email"
 | **Ctrl + Alt + N** | Show / hide the control bar (summons and focuses it when hidden). |
 | **Ctrl + Alt + X** | Stop guiding (global). |
 | **Esc** | Stop guiding (when the bar is focused). |
+| **Ctrl + Alt + P** | Pause / resume guiding (keeps task context). |
+
+---
+
+## Agent control (HTTP API + MCP)
+
+Nudge isn't only driven by the text box — **an AI agent can drive it.** The agent supplies
+the task or the exact steps; Nudge guides *you* through them (it points, you click) and
+reports progress back. Supervised autonomy: the agent directs, you stay in the loop.
+
+While the app is running it serves a **localhost HTTP API** on `127.0.0.1:8765` (localhost
+only; set `control_port` in `config.json` to change it). Set a `NUDGE_TOKEN` env var to
+require an `X-Nudge-Token` header on every request.
+
+| Method & path | Body | Does |
+| --- | --- | --- |
+| `GET /health` | — | Liveness `{ok, app}` (no auth). |
+| `GET /status` | — | Snapshot: `{guiding, scripted, task, step, total, route, route_index, current, state, result, version}`. |
+| `POST /guide` | `{"task": "..."}` | Start an autonomous guide (Nudge plans it). |
+| `POST /guide_steps` | `{"steps": [...], "task": "..."}` | Guide through your explicit ordered steps; they become the route. |
+| `POST /pause` | — | Pause / resume. |
+| `POST /stop` | — | Stop guiding. |
+
+Example (anything that can POST — n8n, Make, curl, your code):
+
+```bash
+curl -X POST http://127.0.0.1:8765/guide_steps \
+  -H "Content-Type: application/json" \
+  -d '{"task":"open settings","steps":["Open the Start menu","Click Settings","Open Display"]}'
+curl http://127.0.0.1:8765/status      # poll for progress / completion
+```
+
+### Claude / Claude Code (MCP)
+
+`nudge_mcp.py` is a stdio MCP server wrapping the API as native agent tools. Register it
+(the Nudge desktop app must be running):
+
+```bat
+pip install -r requirements.txt
+claude mcp add nudge -- .venv\Scripts\python.exe nudge_mcp.py
+```
+
+Tools: `nudge_guide(task)`, `nudge_guide_steps(steps, task, wait, timeout_s)`,
+`nudge_status()`, `nudge_wait_until_done(timeout_s)`, `nudge_stop()`. With `wait=True`
+(default), `nudge_guide_steps` **blocks until you finish the steps**, so the agent's tool
+call returns only once the work is actually done.
+
+> **Roadmap:** today Nudge points and *you* click (supervised). A future opt-in
+> **autopilot** mode will let the agent execute the clicks itself — behind per-action
+> confirmation, allow/deny lists, a kill-switch, and an audit log.
 
 ---
 

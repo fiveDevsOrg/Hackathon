@@ -8,3 +8,6 @@ uiautomation>=2.0
 comtypes>=1.2
 pynput>=1.7
 pyttsx3>=2.90
+# Only needed to run the MCP server (nudge_mcp.py); the desktop app + HTTP
+# control API have no extra deps (the control server is stdlib http.server).
+mcp>=1.2
