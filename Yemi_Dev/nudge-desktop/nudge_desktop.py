@@ -726,7 +726,7 @@ def _model():
 
 
 def plan(task, marks, history, img_b64, win_title=None, app_name=None,
-         route_step=None, stuck_note=None):
+         route_step=None, stuck_note=None, verify_step=False):
     """Ask Claude for the next mark to click. Returns a validated result dict
     {index, instruction, done, source, confidence, key, type_text}. Falls back
     to a local heuristic on any error/timeout/invalid output (source='offline'
@@ -759,6 +759,20 @@ def plan(task, marks, history, img_b64, win_title=None, app_name=None,
             "Clickable elements (the screenshot shows the live screen):\n%s\n\n"
             "Return the STRICT JSON for the single next element to click."
             % (task, hist_text, marks_text))
+
+    if verify_step and route_step:
+        # agent-supplied step: VERIFY completion against the live screen before
+        # advancing -- don't move on just because the user clicked something.
+        user_text += (
+            "\n\nThe CURRENT step is: \"%s\".\n"
+            "FIRST judge whether this step is ALREADY complete -- its result is "
+            "visibly on the screen right now (e.g. the app/window/page it opens "
+            "is open). If complete, respond with EXACTLY {\"step_done\": true} "
+            "and nothing else. If NOT complete, point at the single element to "
+            "click to perform this step (normal JSON); if that element is not "
+            "visible, return a keyboard step (\"key\"/\"type_text\") instead. "
+            "Never report the step done unless its result is actually visible."
+            % route_step)
 
     try:
         import anthropic
@@ -793,17 +807,22 @@ def plan(task, marks, history, img_b64, win_title=None, app_name=None,
             if getattr(block, "type", None) == "text":
                 raw += block.text
         data = _first_json(raw)
-        if not isinstance(data, dict) or "index" not in data:
+        if not isinstance(data, dict) or not any(
+                k in data for k in ("index", "step_done", "done", "key", "type_text")):
             return _heuristic(task, marks)
-        idx = int(data.get("index", -1))
+        idx = int(data.get("index", -1)) if str(data.get("index", "")).lstrip("-").isdigit() else -1
         out = {
             "instruction": str(data.get("instruction") or "Click this.").strip()[:160],
             "done": bool(data.get("done", False)),
+            "step_done": bool(data.get("step_done", False)),
             "source": "AI",
             "confidence": data.get("confidence"),
             "key": (data.get("key") or None),
             "type_text": (data.get("type_text") or None),
         }
+        if out["step_done"]:        # verified: this agent step is complete
+            out["index"] = -1
+            return out
         if 0 <= idx < len(marks):
             out["index"] = idx
             return out
@@ -1142,7 +1161,7 @@ class PlanWorker(QtCore.QThread):
     finished = QtCore.pyqtSignal(dict)
 
     def __init__(self, task, history, mon_index=1, screen_rect=None, gen=0,
-                 stuck_note=None, route_step=None):
+                 stuck_note=None, route_step=None, scripted=False):
         super().__init__()
         self.task = task
         self.history = list(history)
@@ -1151,6 +1170,7 @@ class PlanWorker(QtCore.QThread):
         self.gen = gen
         self.stuck_note = stuck_note
         self.route_step = route_step
+        self.scripted = scripted
 
     def run(self):
         result = {"ok": False, "marks": [], "plan": None, "fg": 0, "tb": 0,
@@ -1168,7 +1188,9 @@ class PlanWorker(QtCore.QThread):
             # confident == a unique strong name match we HAVEN'T already clicked
             already = (h.get("index", -1) >= 0 and marks
                        and marks[h["index"]]["name"] in self.history)
-            confident = _confident_local(h) and not already
+            # no instant fast-path in scripted mode: always take a screenshot so
+            # the planner can VERIFY whether the current step is actually done
+            confident = _confident_local(h) and not already and not self.scripted
             # instant optimistic pointer for confident matches (main thread
             # decides whether to actually show it)
             self.prelim.emit({"marks": marks, "plan": h, "fg": fg, "tb": tb,
@@ -1185,7 +1207,8 @@ class PlanWorker(QtCore.QThread):
             wt = getattr(_scan_ctx, "win_title", None)
             an = getattr(_scan_ctx, "app_name", None)
             pl = plan(self.task, marks, self.history, b64, win_title=wt, app_name=an,
-                      stuck_note=self.stuck_note, route_step=self.route_step)
+                      stuck_note=self.stuck_note, route_step=self.route_step,
+                      verify_step=self.scripted)
             # verify before declaring done -- one cheap second opinion against a
             # fresh screenshot catches premature "Done!"
             if pl.get("done"):
@@ -2011,10 +2034,11 @@ class ControlBar(QtWidgets.QWidget):
             if not self.history or self.history[-1] != nm:
                 self.history.append(nm)
             self.history = self.history[-HISTORY_CAP:]  # bound prompt + memory
-        exhausted = self._advance_route()  # tick the route checklist
-        if self._scripted and exhausted:
-            self._finish_scripted()        # all agent steps done -> report
-            return
+        # In scripted (agent) mode the route advances ONLY when the planner
+        # verifies the step is done (in _on_plan) -- not on a raw click. In
+        # autonomous mode the checklist tick is just cosmetic.
+        if not self._scripted:
+            self._advance_route()
         self.cur_target = None
         self.explain_btn.setEnabled(False)
         self.overlay.clear()  # drop the stale pointer immediately for feedback
@@ -2290,7 +2314,8 @@ class ControlBar(QtWidgets.QWidget):
         route_step = None
         if self._route and 0 <= self._route_i < len(self._route):
             route_step = self._route[self._route_i]
-        w = PlanWorker(self.task, self.history, mon, rect, gen, stuck, route_step)
+        w = PlanWorker(self.task, self.history, mon, rect, gen, stuck, route_step,
+                       scripted=self._scripted)
         w.prelim.connect(self._on_prelim)
         w.finished.connect(self._on_plan)
         self._inflight.append(w)   # keep a ref so the QThread isn't GC'd mid-run
@@ -2417,6 +2442,27 @@ class ControlBar(QtWidgets.QWidget):
         self.marks = result["marks"]
         pl = result["plan"] or {}
         fg, tb = result.get("fg", 0), result.get("tb", 0)
+
+        # scripted (agent steps): advance ONLY when the planner verifies (against
+        # the live screenshot) that the current step's result is on screen.
+        if self._scripted:
+            if pl.get("done"):
+                self._finish_scripted()
+                return
+            if pl.get("step_done"):
+                self._route_i += 1
+                self._render_route()
+                self.overlay.clear()
+                self.cur_target = None
+                if self._route_i >= len(self._route):
+                    self._finish_scripted()
+                    return
+                nxt = self._route[self._route_i]
+                self._set_state("thinking", "Step %d of %d - %s" % (
+                    self._route_i + 1, len(self._route), nxt))
+                self._kick()
+                return
+            # step NOT done -> fall through and keep pointing at this step
 
         # empty-marks / custom-drawn-app handling
         if not self.marks:
