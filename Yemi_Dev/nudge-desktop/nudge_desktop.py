@@ -176,11 +176,20 @@ def _walk(ctrl, depth, maxdepth, out, cap):
             w, h = r.width(), r.height()
             name = (c.Name or "").strip()
             if w > 0 and h > 0 and name and c.ControlType in INTERACTIVE:
-                out.append({
-                    "name": name[:50],
-                    "type": c.ControlTypeName,
-                    "rect": (r.left, r.top, w, h),
-                })
+                # skip elements UIA reports as NOT currently on screen (scrolled
+                # out of a menu/list, virtualized) -- they still carry a valid
+                # rectangle, so pointing at them lands on dead space.
+                offscreen = False
+                try:
+                    offscreen = bool(c.IsOffscreen)
+                except Exception:
+                    offscreen = False
+                if not offscreen:
+                    out.append({
+                        "name": name[:50],
+                        "type": c.ControlTypeName,
+                        "rect": (r.left, r.top, w, h),
+                    })
         except Exception:
             pass
         _walk(c, depth + 1, maxdepth, out, cap)
