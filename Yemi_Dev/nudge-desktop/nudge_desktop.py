@@ -229,6 +229,42 @@ def _taskbar_for_screen(screen_rect):
 _scan_ctx = threading.local()
 
 
+_OUR_PID = os.getpid()
+
+
+def _hwnd_pid(hwnd):
+    try:
+        import ctypes
+        from ctypes import wintypes
+        pid = wintypes.DWORD()
+        ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        return int(pid.value)
+    except Exception:
+        return 0
+
+
+def _foreground_window():
+    """The topmost VISIBLE top-level window that is NOT one of Nudge's own
+    windows. Critical: otherwise we'd scan + point at Nudge's own control bar
+    (e.g. its 'Settings' preset chip) instead of the app behind it."""
+    try:
+        import ctypes
+        u = ctypes.windll.user32
+        hwnd = u.GetForegroundWindow()
+        guard = 0
+        while hwnd and guard < 50:
+            if _hwnd_pid(hwnd) != _OUR_PID and u.IsWindowVisible(hwnd):
+                return hwnd
+            hwnd = u.GetWindow(hwnd, 2)  # GW_HWNDNEXT -> next window down the Z-order
+            guard += 1
+    except Exception:
+        pass
+    try:
+        return _auto.GetForegroundWindow()
+    except Exception:
+        return None
+
+
 def _proc_name(hwnd):
     """Best-effort process image basename for a window handle (e.g. 'chrome.exe')."""
     try:
@@ -270,8 +306,8 @@ def scan_marks(screen_rect=None):
     # foreground window (+ capture its title/app for the planner prompt)
     title, appname = "", ""
     try:
-        hwnd = _auto.GetForegroundWindow()
-        win = _auto.ControlFromHandle(hwnd)
+        hwnd = _foreground_window()   # never Nudge's own window
+        win = _auto.ControlFromHandle(hwnd) if hwnd else None
         if win is not None:
             try:
                 title = (win.Name or "").strip()[:120]
