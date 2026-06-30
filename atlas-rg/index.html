@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Atlas</title>
+    <meta
+      name="description"
+      content="A minimal persistent world model for entities, relationships, and events."
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: #000000;
+        color: #18181b;
+        font-family: Inter, system-ui, sans-serif;
+      }
+
+      .boot-shell {
+        display: grid;
+        min-height: 100vh;
+        place-items: center;
+        padding: 24px;
+      }
+
+      .boxes {
+        --size: 32px;
+        --duration: 800ms;
+        height: calc(var(--size) * 2);
+        perspective: 800px;
+        position: relative;
+        transform-style: preserve-3d;
+        width: calc(var(--size) * 3);
+      }
+
+      .box {
+        animation: atlas-box-hop var(--duration) ease-in-out infinite;
+        height: var(--size);
+        left: var(--x);
+        position: absolute;
+        top: var(--y);
+        transform-style: preserve-3d;
+        width: var(--size);
+      }
+
+      .box-1 {
+        --x: 0;
+        --y: 0;
+      }
+
+      .box-2 {
+        --x: var(--size);
+        --y: 0;
+        animation-delay: 100ms;
+      }
+
+      .box-3 {
+        --x: 0;
+        --y: var(--size);
+        animation-delay: 200ms;
+      }
+
+      .box-4 {
+        --x: var(--size);
+        --y: var(--size);
+        animation-delay: 300ms;
+      }
+
+      .face {
+        background: rgba(255, 255, 255, 0.08);
+        border: 1px solid rgba(255, 255, 255, 0.72);
+        height: var(--size);
+        position: absolute;
+        width: var(--size);
+      }
+
+      .face-front {
+        transform: translateZ(calc(var(--size) / 2));
+      }
+
+      .face-back {
+        transform: rotateY(180deg) translateZ(calc(var(--size) / 2));
+      }
+
+      .face-right {
+        transform: rotateY(90deg) translateZ(calc(var(--size) / 2));
+      }
+
+      .face-top {
+        background: rgba(161, 161, 170, 0.12);
+        transform: rotateX(90deg) translateZ(calc(var(--size) / 2));
+      }
+
+      @keyframes atlas-box-hop {
+        0%,
+        100% {
+          transform: translate3d(0, 0, 0) rotateX(-18deg) rotateY(28deg);
+        }
+        50% {
+          transform: translate3d(0, -14px, 0) rotateX(-18deg) rotateY(118deg);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root">
+      <main class="boot-shell" aria-label="Loading Atlas">
+        <div class="boxes">
+          <div class="box box-1">
+            <div class="face face-front"></div>
+            <div class="face face-right"></div>
+            <div class="face face-top"></div>
+            <div class="face face-back"></div>
+          </div>
+          <div class="box box-2">
+            <div class="face face-front"></div>
+            <div class="face face-right"></div>
+            <div class="face face-top"></div>
+            <div class="face face-back"></div>
+          </div>
+          <div class="box box-3">
+            <div class="face face-front"></div>
+            <div class="face face-right"></div>
+            <div class="face face-top"></div>
+            <div class="face face-back"></div>
+          </div>
+          <div class="box box-4">
+            <div class="face face-front"></div>
+            <div class="face face-right"></div>
+            <div class="face face-top"></div>
+            <div class="face face-back"></div>
+          </div>
+        </div>
+      </main>
+    </div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

@@ -1,0 +1,9 @@
+.env
+.env.*
+!.env.example
+atlas.agent.config.json
+.smoke-results.json
+dist/
+node_modules/
+api/node_modules/
+npm-debug.log*

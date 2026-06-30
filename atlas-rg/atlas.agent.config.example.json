@@ -1,0 +1,7 @@
+{
+  "atlasUrl": "http://localhost:5173",
+  "apiKeyEnv": "ATLAS_AGENT_API_KEY",
+  "agentId": "codex-cli",
+  "agentName": "Codex CLI",
+  "defaultProject": "Atlas"
+}
